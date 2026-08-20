@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -32,6 +34,7 @@ func (s *Postgres) CreateFeed(ctx context.Context, url, title, siteURL string) (
 	if err != nil {
 		return nil, fmt.Errorf("create feed: %w", err)
 	}
+	f.CollectionIDs = []int64{}
 	return &f, nil
 }
 
@@ -44,7 +47,7 @@ func (s *Postgres) ListFeeds(ctx context.Context) ([]Feed, error) {
 	}
 	defer rows.Close()
 
-	var out []Feed
+	out := make([]Feed, 0)
 	for rows.Next() {
 		var f Feed
 		if err := rows.Scan(&f.ID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt); err != nil {
@@ -55,7 +58,51 @@ func (s *Postgres) ListFeeds(ctx context.Context) ([]Feed, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate feeds: %w", err)
 	}
+
+	ids := make([]int64, len(out))
+	for i, f := range out {
+		ids[i] = f.ID
+	}
+	byFeed, err := s.feedCollectionMap(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if cids := byFeed[out[i].ID]; len(cids) > 0 {
+			out[i].CollectionIDs = cids
+		} else {
+			out[i].CollectionIDs = []int64{}
+		}
+	}
 	return out, nil
+}
+
+// feedCollectionMap returns, for the given feed IDs, the collection IDs each
+// belongs to (empty map entries mean no membership).
+func (s *Postgres) feedCollectionMap(ctx context.Context, feedIDs []int64) (map[int64][]int64, error) {
+	m := make(map[int64][]int64, len(feedIDs))
+	if len(feedIDs) == 0 {
+		return m, nil
+	}
+	ph := placeholders(len(feedIDs))
+	rows, err := s.pool.Query(ctx,
+		`SELECT feed_id, collection_id FROM feed_collections
+		 WHERE feed_id IN (`+ph+`)`, toAny(feedIDs)...)
+	if err != nil {
+		return nil, fmt.Errorf("list feed collections: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var feedID, collID int64
+		if err := rows.Scan(&feedID, &collID); err != nil {
+			return nil, fmt.Errorf("scan feed collection: %w", err)
+		}
+		m[feedID] = append(m[feedID], collID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate feed collections: %w", err)
+	}
+	return m, nil
 }
 
 func (s *Postgres) DeleteFeed(ctx context.Context, id int64) error {
@@ -67,6 +114,39 @@ func (s *Postgres) DeleteFeed(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Postgres) DeleteFeeds(ctx context.Context, ids []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	ph := placeholders(len(ids))
+	tag, err := s.pool.Exec(ctx, `DELETE FROM feeds WHERE id IN (`+ph+`)`, toAny(ids)...)
+	if err != nil {
+		return 0, fmt.Errorf("delete feeds: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// SetFeedCollections replaces the collections a feed belongs to.
+func (s *Postgres) SetFeedCollections(ctx context.Context, feedID int64, collectionIDs []int64) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op if committed
+
+	if _, err := tx.Exec(ctx, `DELETE FROM feed_collections WHERE feed_id = $1`, feedID); err != nil {
+		return fmt.Errorf("clear feed collections: %w", err)
+	}
+	for _, cid := range collectionIDs {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO feed_collections (feed_id, collection_id) VALUES ($1, $2)
+			 ON CONFLICT (feed_id, collection_id) DO NOTHING`, feedID, cid); err != nil {
+			return fmt.Errorf("set feed collection: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Postgres) TouchFeed(ctx context.Context, id int64) error {
@@ -112,6 +192,11 @@ func (s *Postgres) ListItems(ctx context.Context, q ItemQuery) ([]Item, int, err
 	if q.FeedID != nil {
 		conds = append(conds, fmt.Sprintf("i.feed_id = $%d", len(args)+1))
 		args = append(args, *q.FeedID)
+	}
+	if q.CollectionID != nil {
+		conds = append(conds, fmt.Sprintf(
+			"i.feed_id IN (SELECT feed_id FROM feed_collections WHERE collection_id = $%d)", len(args)+1))
+		args = append(args, *q.CollectionID)
 	}
 	if q.Unread != nil {
 		conds = append(conds, fmt.Sprintf("i.read = $%d", len(args)+1))
@@ -186,10 +271,119 @@ func (s *Postgres) UnreadCount(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// --- collections ---
+
+func (s *Postgres) CreateCollection(ctx context.Context, name string) (*Collection, error) {
+	var c Collection
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO collections (name) VALUES ($1)
+		 RETURNING id, name, created_at`, name,
+	).Scan(&c.ID, &c.Name, &c.CreatedAt)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: %q already exists", ErrConflict, name)
+		}
+		return nil, fmt.Errorf("create collection: %w", err)
+	}
+	return &c, nil
+}
+
+func (s *Postgres) ListCollections(ctx context.Context) ([]Collection, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT c.id, c.name, c.created_at, count(f.feed_id)
+		 FROM collections c
+		 LEFT JOIN feed_collections f ON f.collection_id = c.id
+		 GROUP BY c.id, c.name, c.created_at
+		 ORDER BY c.name ASC, c.id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list collections: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Collection, 0)
+	for rows.Next() {
+		var c Collection
+		if err := rows.Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount); err != nil {
+			return nil, fmt.Errorf("scan collection: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate collections: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Postgres) RenameCollection(ctx context.Context, id int64, name string) (*Collection, error) {
+	var c Collection
+	err := s.pool.QueryRow(ctx,
+		`UPDATE collections AS c SET name = $2 WHERE c.id = $1
+		 RETURNING c.id, c.name, c.created_at,
+		 (SELECT count(fc.feed_id) FROM feed_collections fc WHERE fc.collection_id = c.id)`,
+		id, name,
+	).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: %q already exists", ErrConflict, name)
+		}
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("rename collection: %w", err)
+	}
+	return &c, nil
+}
+
+func (s *Postgres) DeleteCollection(ctx context.Context, id int64) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM collections WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete collection: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ErrNotFound is returned when an operation targets a row that does not exist.
 var ErrNotFound = errors.New("not found")
+
+// ErrConflict is returned when a uniqueness constraint would be violated
+// (e.g. creating a collection whose name already exists).
+var ErrConflict = errors.New("conflict")
 
 // itoa is a tiny int-to-string helper used to build positional SQL parameters.
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+// toAny converts []int64 to []any so it can be passed to pgx's variadic
+// Query/Exec arguments.
+func toAny(ids []int64) []any {
+	out := make([]any, len(ids))
+	for i, v := range ids {
+		out[i] = v
+	}
+	return out
+}
+
+// placeholders builds "$1,$2,...,$n" for use in IN (...) clauses.
+func placeholders(n int) string {
+	b := make([]string, n)
+	for i := range b {
+		b[i] = "$" + itoa(i+1)
+	}
+	return strings.Join(b, ",")
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint error.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// rowsAffectedZero reports whether a QueryRow scan failed because no row was
+// returned (pgx surfaces this as ErrNoRows).
+func rowsAffectedZero(err error) bool {
+	return errors.Is(err, pgx.ErrNoRows)
 }

@@ -7,6 +7,20 @@ export interface Feed {
   site_url: string;
   last_fetched: string | null;
   created_at: string;
+  collection_ids: number[];
+}
+
+export interface Collection {
+  id: number;
+  name: string;
+  feed_count: number;
+  created_at: string;
+}
+
+export interface AddFeedResult {
+  url: string;
+  feed?: Feed;
+  error?: string;
 }
 
 export interface Item {

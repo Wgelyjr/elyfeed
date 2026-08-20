@@ -80,6 +80,41 @@ func (r *Refresher) AddFeed(ctx context.Context, url string) (*store.Feed, error
 	return dbFeed, nil
 }
 
+// AddFeedResult reports the outcome of adding a single feed in a bulk add.
+type AddFeedResult struct {
+	URL   string      `json:"url"`
+	Feed  *store.Feed `json:"feed,omitempty"`
+	Error string      `json:"error,omitempty"`
+}
+
+// AddFeeds adds multiple feeds, validating and seeding each. Per-URL failures
+// are captured in the returned results rather than aborting the whole batch.
+// Blank and duplicate URLs are skipped.
+func (r *Refresher) AddFeeds(ctx context.Context, urls []string) []AddFeedResult {
+	seen := make(map[string]struct{}, len(urls))
+	results := make([]AddFeedResult, 0, len(urls))
+	for _, raw := range urls {
+		u := strings.TrimSpace(raw)
+		if u == "" {
+			continue
+		}
+		if _, dup := seen[u]; dup {
+			continue
+		}
+		seen[u] = struct{}{}
+
+		feed, err := r.AddFeed(ctx, u)
+		res := AddFeedResult{URL: u}
+		if err != nil {
+			res.Error = err.Error()
+		} else {
+			res.Feed = feed
+		}
+		results = append(results, res)
+	}
+	return results
+}
+
 // RefreshAll fetches every subscribed feed and upserts new items. It returns
 // the number of feeds refreshed successfully.
 func (r *Refresher) RefreshAll(ctx context.Context) (int, error) {

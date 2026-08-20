@@ -3,6 +3,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -37,7 +38,14 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/feeds", s.handleListFeeds)
 	mux.HandleFunc("POST /api/feeds", s.handleAddFeed)
+	mux.HandleFunc("POST /api/feeds/bulk", s.handleAddFeeds)
+	mux.HandleFunc("POST /api/feeds/bulk-delete", s.handleBulkDeleteFeeds)
+	mux.HandleFunc("PUT /api/feeds/{id}/collections", s.handleSetFeedCollections)
 	mux.HandleFunc("DELETE /api/feeds/{id}", s.handleDeleteFeed)
+	mux.HandleFunc("GET /api/collections", s.handleListCollections)
+	mux.HandleFunc("POST /api/collections", s.handleCreateCollection)
+	mux.HandleFunc("PATCH /api/collections/{id}", s.handleRenameCollection)
+	mux.HandleFunc("DELETE /api/collections/{id}", s.handleDeleteCollection)
 	mux.HandleFunc("GET /api/items", s.handleListItems)
 	mux.HandleFunc("GET /api/items/unread-count", s.handleUnreadCount)
 	mux.HandleFunc("POST /api/items/{id}/read", s.handleSetItemRead)
@@ -103,6 +111,152 @@ func (s *Server) handleDeleteFeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleAddFeeds adds several feeds at once (one per URL). Each URL is
+// validated and seeded independently; failures are reported per URL.
+func (s *Server) handleAddFeeds(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URLs []string `json:"urls"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.URLs) == 0 {
+		writeError(w, http.StatusBadRequest, "urls is required")
+		return
+	}
+	results := s.refresher.AddFeeds(r.Context(), req.URLs)
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// handleBulkDeleteFeeds removes several feeds by ID.
+func (s *Server) handleBulkDeleteFeeds(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "ids is required")
+		return
+	}
+	n, err := s.store.DeleteFeeds(r.Context(), req.IDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
+}
+
+// handleSetFeedCollections replaces the collections a feed belongs to.
+func (s *Server) handleSetFeedCollections(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	var req struct {
+		CollectionIDs []int64 `json:"collection_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := s.store.SetFeedCollections(r.Context(), id, req.CollectionIDs); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// --- collections ---
+
+func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
+	collections, err := s.store.ListCollections(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if collections == nil {
+		collections = []store.Collection{}
+	}
+	writeJSON(w, http.StatusOK, collections)
+}
+
+func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	collection, err := s.store.CreateCollection(r.Context(), name)
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, collection)
+}
+
+func (s *Server) handleRenameCollection(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	collection, err := s.store.RenameCollection(r.Context(), id, name)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrConflict):
+			writeError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "collection not found")
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, collection)
+}
+
+func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	if err := s.store.DeleteCollection(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "collection not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // --- items ---
 
 func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +269,14 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		q.FeedID = &id
+	}
+	if cid := r.URL.Query().Get("collection_id"); cid != "" {
+		id, err := strconv.ParseInt(cid, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "collection_id must be an integer")
+			return
+		}
+		q.CollectionID = &id
 	}
 	if r.URL.Query().Get("unread") == "true" {
 		q.Unread = boolPtr(true)

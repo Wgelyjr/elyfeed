@@ -1,4 +1,11 @@
-import type { Feed, Item, ItemsResponse, UnreadCountResponse } from './types';
+import type {
+  AddFeedResult,
+  Collection,
+  Feed,
+  Item,
+  ItemsResponse,
+  UnreadCountResponse,
+} from './types';
 
 // Thin typed wrapper over the JSON API. All requests are same-origin (the Go
 // server serves both the API and the app), so no credentials/CORS juggling.
@@ -23,6 +30,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface ListItemsParams {
   feed_id?: number;
+  collection_id?: number;
   unread?: boolean;
   limit?: number;
   offset?: number;
@@ -37,9 +45,50 @@ export const api = {
   deleteFeed: (id: number): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>(`/api/feeds/${id}`, { method: 'DELETE' }),
 
+  bulkAddFeeds: (urls: string[]): Promise<{ results: AddFeedResult[] }> =>
+    request<{ results: AddFeedResult[] }>('/api/feeds/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ urls }),
+    }),
+
+  bulkDeleteFeeds: (ids: number[]): Promise<{ deleted: number }> =>
+    request<{ deleted: number }>('/api/feeds/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
+
+  setFeedCollections: (
+    id: number,
+    collectionIds: number[],
+  ): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>(`/api/feeds/${id}/collections`, {
+      method: 'PUT',
+      body: JSON.stringify({ collection_ids: collectionIds }),
+    }),
+
+  listCollections: (): Promise<Collection[]> =>
+    request<Collection[]>('/api/collections'),
+
+  createCollection: (name: string): Promise<Collection> =>
+    request<Collection>('/api/collections', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  renameCollection: (id: number, name: string): Promise<Collection> =>
+    request<Collection>(`/api/collections/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+
+  deleteCollection: (id: number): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>(`/api/collections/${id}`, { method: 'DELETE' }),
+
   listItems: (params: ListItemsParams): Promise<ItemsResponse> => {
     const qs = new URLSearchParams();
     if (params.feed_id != null) qs.set('feed_id', String(params.feed_id));
+    if (params.collection_id != null)
+      qs.set('collection_id', String(params.collection_id));
     if (params.unread) qs.set('unread', 'true');
     if (params.limit != null) qs.set('limit', String(params.limit));
     if (params.offset != null) qs.set('offset', String(params.offset));

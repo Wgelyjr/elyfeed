@@ -301,3 +301,257 @@ body {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
 }
+
+/* Button variants */
+.btn.small {
+  padding: 0.25rem 0.55rem;
+  font-size: 0.78rem;
+}
+
+.btn.tiny {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.72rem;
+}
+
+.btn.danger {
+  border-color: var(--error-text);
+  color: var(--error-text);
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: var(--error-bg);
+  border-color: var(--error-text);
+  color: var(--error-text);
+}
+
+/* Small helpers */
+.small {
+  font-size: 0.78rem;
+}
+
+.pad-x {
+  padding-left: 0.6rem;
+  padding-right: 0.6rem;
+}
+
+/* Icon button (rename / delete / organize) */
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.2rem 0.35rem;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.icon-btn.danger:hover:not(:disabled) {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+/* Bulk add */
+.bulk-toggle {
+  padding: 0.25rem 1rem 0.25rem;
+}
+
+.bulk-add {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.25rem 1rem 0.5rem;
+}
+
+.bulk-add textarea {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.bulk-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+/* Sidebar sections */
+.side-section {
+  padding: 0.75rem 0.5rem 0.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.5rem 0.35rem;
+}
+
+.section-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Inline create/rename form */
+.inline-form {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem 0.35rem;
+}
+
+.inline-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+/* Collections */
+.coll-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.coll-row {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.coll-row .nav-item {
+  flex: 1;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  text-align: left;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.9rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.nav-item .nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nav-item:hover {
+  background: var(--bg);
+}
+
+.nav-item.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.count {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+}
+
+.nav-item.active .count {
+  color: var(--accent-contrast);
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.row-actions {
+  display: flex;
+  gap: 0.1rem;
+  opacity: 0;
+  transition: opacity 0.12s;
+  flex: 0 0 auto;
+}
+
+.coll-row:hover .row-actions {
+  opacity: 1;
+}
+
+/* Feed organize / assignment */
+.feed-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.assign-panel {
+  margin: 0.15rem 0 0.15rem 0.6rem;
+  padding: 0.35rem 0.5rem;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.assign-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  padding: 0.2rem 0.3rem;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.assign-row:hover {
+  background: var(--bg);
+}
+
+/* Manage mode rows */
+.feed-row.manage {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.feed-row.manage:hover {
+  background: var(--bg);
+}
+
+.feed-row.manage input[type='checkbox'] {
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.feed-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.9rem;
+}
