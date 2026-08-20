@@ -14,6 +14,10 @@ import (
 var migrationsFS embed.FS
 
 // Open builds a connection pool from a DSN and verifies connectivity.
+//
+// Postgres may not be accepting connections yet (e.g. during containerized
+// startup), so the initial ping is retried on a short backoff for a bounded
+// period before failing.
 func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -26,13 +30,30 @@ func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("create pool: %w", err)
 	}
 
-	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("connect to database: %w", err)
+	const (
+		maxWait   = 60 * time.Second
+		pingTTL   = 5 * time.Second
+		retryWait = 2 * time.Second
+	)
+	deadline := time.Now().Add(maxWait)
+	for {
+		pingCtx, cancel := context.WithTimeout(ctx, pingTTL)
+		err := pool.Ping(pingCtx)
+		cancel()
+		if err == nil {
+			return pool, nil
+		}
+		if time.Now().After(deadline) {
+			pool.Close()
+			return nil, fmt.Errorf("connect to database (giving up after %s): %w", maxWait, err)
+		}
+		select {
+		case <-ctx.Done():
+			pool.Close()
+			return nil, ctx.Err()
+		case <-time.After(retryWait):
+		}
 	}
-	return pool, nil
 }
 
 // Migrate applies the embedded schema. It is idempotent and safe to run on

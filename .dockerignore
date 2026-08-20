@@ -1,0 +1,8 @@
+# VCS & local artifacts
+.git
+*.log
+
+# Local build outputs (the frontend is built fresh in the web stage)
+bin
+web/node_modules
+internal/web/dist

@@ -4,6 +4,7 @@ package server
 import (
 	"encoding/json"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -13,6 +14,13 @@ import (
 	"elyfeed/internal/refresh"
 	"elyfeed/internal/store"
 )
+
+func init() {
+	// Serve deterministic content types for the embedded frontend regardless of
+	// the host's mime.types table (minimal container images often lack entries).
+	mime.AddExtensionType(".webmanifest", "application/manifest+json")
+	mime.AddExtensionType(".ico", "image/x-icon")
+}
 
 // Server wires the store and refresher behind HTTP handlers.
 type Server struct {

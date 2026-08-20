@@ -16,5 +16,25 @@ services:
       timeout: 3s
       retries: 10
 
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: elyfeed:latest
+    container_name: elyfeed
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://elyfeed:elyfeed@db:5432/elyfeed?sslmode=disable
+      HOST: 0.0.0.0
+      PORT: "8080"
+      REFRESH_INTERVAL: 10m
+    ports:
+      # 8080 is the app's internal port. The host port defaults to 8180 because
+      # 8080 is often taken on dev machines; override with ELYFEED_PORT.
+      - "${ELYFEED_PORT:-8180}:8080"
+    restart: unless-stopped
+
 volumes:
   elyfeed_pgdata:

@@ -20,12 +20,12 @@ it to your home screen.
 - **Backend**: Go (stdlib `net/http` mux, `go:embed` for the frontend)
 - **Database**: PostgreSQL 16 (via podman compose)
 - **Frontend**: React 18, Vite, TypeScript, TanStack Query, vite-plugin-pwa
+- **Packaging**: multi-stage `Dockerfile` (web build → go build → minimal alpine)
 
 ## Requirements
 
-- Go 1.22+
-- Node 18+ and npm
-- podman (or docker) with the compose plugin
+- **Container run**: podman (or docker) with the compose plugin. That's it.
+- **Native run/build**: Go 1.24+ and Node 18+ with npm
 - ImageMagick (only if regenerating icons)
 
 ## Quick start
@@ -49,6 +49,32 @@ To develop the frontend with hot reload (proxies `/api` to `:8080`):
 make dev   # in one terminal (requires the Go server running on :8080)
 make run   # in another terminal
 ```
+
+## Run with containers (simplest)
+
+Build the image and start Postgres + the app together:
+
+```sh
+make up
+```
+
+Then open http://localhost:8180 (the app's host port; see note below), add a
+feed URL, and hit **Refresh**.
+
+```sh
+make logs     # follow app + db logs
+make down     # stop and remove (the data volume is preserved)
+```
+
+Notes:
+
+- The app listens on port **8080 inside the container**. The host port defaults
+  to **8180** because 8080 is commonly taken on dev machines. Override with
+  `ELYFEED_PORT=9000 make up` (then use `http://localhost:9000`).
+- The app waits (up to 60s) for Postgres to accept connections before
+  failing, so container startup order is handled automatically.
+- Feed data persists in the `elyfeed_pgdata` volume. `make down` does not drop
+  it; use `podman compose down -v` to discard the database too.
 
 ## Configuration
 
@@ -93,7 +119,9 @@ internal/server             HTTP handlers + embedded SPA serving
 internal/web/embed.go       go:embed of the built frontend
 internal/web/dist           built frontend output (generated; placeholder tracked)
 web/                        Vite + React + TS frontend source
-compose.yml                 podman/docker compose for Postgres
+Dockerfile                  multi-stage image: web build -> go build -> alpine
+.dockerignore               build-context exclusions
+compose.yml                 podman/docker compose for Postgres + app
 scripts/make-icons.sh       PWA icon generation
 ```
 

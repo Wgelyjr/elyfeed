@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PORT ?= 8080
 DB_URL ?= postgres://elyfeed:elyfeed@localhost:5432/elyfeed?sslmode=disable
 
-.PHONY: all build run dev build-web test vet db-up db-down db-logs icons clean
+.PHONY: all build run dev build-web test vet up down logs build-image db-up db-down db-logs icons clean
 
 all: build
 
@@ -28,8 +28,27 @@ test:
 vet:
 	go vet ./...
 
+# Build the container image.
+build-image:
+	podman build -t elyfeed:latest -f Dockerfile .
+
+# Build (if needed) and start the full stack (db + app).
+# --force-recreate app: podman-compose does not detect image changes on its
+# own, so recreate the app to guarantee the freshly built image is running.
+# Host port for the app defaults to 8180; override with ELYFEED_PORT=....
+up:
+	podman compose up -d --build --force-recreate app
+
+# Stop and remove the stack (data volume is preserved).
+down:
+	podman compose down
+
+logs:
+	podman compose logs -f
+
+# Start only Postgres (for native `make run` dev workflow).
 db-up:
-	podman compose up -d
+	podman compose up -d db
 
 db-down:
 	podman compose down
