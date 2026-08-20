@@ -1,0 +1,23 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+
+# Built frontend (generated into the Go embed dir)
+/internal/web/dist/
+
+# Node
+web/node_modules/
+web/dist/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+*.log
+.idea/
+.vscode/
