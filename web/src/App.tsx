@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -9,12 +10,19 @@ import type { Item } from './types';
 import Sidebar from './components/Sidebar';
 import ItemList from './components/ItemList';
 
+// How many items to fetch per scroll "page".
+const PAGE_SIZE = 30;
+
 export default function App() {
   const queryClient = useQueryClient();
   const [selectedFeedId, setSelectedFeedId] = useState<number | null>(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState<
     number | null
   >(null);
+  // Sidebar starts open on desktop, closed on phones (where it's an overlay).
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => (typeof window === 'undefined' ? true : window.innerWidth >= 768),
+  );
 
   const feedsQuery = useQuery({ queryKey: ['feeds'], queryFn: api.listFeeds });
   const collectionsQuery = useQuery({
@@ -22,16 +30,25 @@ export default function App() {
     queryFn: api.listCollections,
   });
 
-  // Exactly one of feed/collection selection is active at a time.
-  const itemsQuery = useQuery({
+  // Exactly one of feed/collection selection is active at a time. Items load in
+  // pages and are appended as the user scrolls (infinite scroll).
+  const itemsQuery = useInfiniteQuery({
     queryKey: ['items', selectedFeedId, selectedCollectionId],
-    queryFn: () =>
+    queryFn: ({ pageParam }) =>
       api.listItems({
         feed_id: selectedFeedId ?? undefined,
         collection_id: selectedCollectionId ?? undefined,
-        limit: 200,
+        limit: PAGE_SIZE,
+        offset: pageParam,
       }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((n, p) => n + p.items.length, 0);
+      return loaded < lastPage.total ? loaded : undefined;
+    },
   });
+
+  const items = itemsQuery.data?.pages.flatMap((p) => p.items) ?? [];
 
   const unreadQuery = useQuery({
     queryKey: ['unread'],
@@ -111,14 +128,22 @@ export default function App() {
     collectionsQuery.data?.find((c) => c.id === selectedCollectionId) ?? null;
 
   // Selecting a feed clears the active collection, and vice versa, so the two
-  // never compete for the item list.
+  // never compete for the item list. On phones the nav is an overlay, so pick a
+  // destination and slide it away.
+  const closeSidebarOnMobile = () => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
+  };
   const handleSelectFeed = (id: number | null) => {
     setSelectedFeedId(id);
     setSelectedCollectionId(null);
+    closeSidebarOnMobile();
   };
   const handleSelectCollection = (id: number | null) => {
     setSelectedCollectionId(id);
     setSelectedFeedId(null);
+    closeSidebarOnMobile();
   };
 
   function handleOpen(id: number, item: Item) {
@@ -129,6 +154,7 @@ export default function App() {
   return (
     <div className="app">
       <Sidebar
+        open={sidebarOpen}
         feeds={feedsQuery.data ?? []}
         collections={collectionsQuery.data ?? []}
         selectedFeedId={selectedFeedId}
@@ -158,6 +184,14 @@ export default function App() {
 
       <main className="main">
         <header className="topbar">
+          <button
+            className="menu-btn"
+            onClick={() => setSidebarOpen((o) => !o)}
+            aria-label={sidebarOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={sidebarOpen}
+          >
+            ☰
+          </button>
           <h1>
             {selectedCollection
               ? selectedCollection.name
@@ -186,12 +220,23 @@ export default function App() {
         )}
 
         <ItemList
-          items={itemsQuery.data?.items ?? []}
+          items={items}
           loading={itemsQuery.isLoading}
           error={itemsQuery.isError ? itemsQuery.error.message : null}
           onOpen={handleOpen}
+          hasMore={itemsQuery.hasNextPage}
+          loadingMore={itemsQuery.isFetchingNextPage}
+          onLoadMore={() => {
+            if (itemsQuery.hasNextPage && !itemsQuery.isFetchingNextPage) {
+              itemsQuery.fetchNextPage();
+            }
+          }}
         />
       </main>
+
+      {sidebarOpen && (
+        <div className="backdrop" onClick={() => setSidebarOpen(false)} />
+      )}
     </div>
   );
 }

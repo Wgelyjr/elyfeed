@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import type { Collection, Feed } from '../types';
 
 interface Props {
+  open: boolean;
   feeds: Feed[];
   collections: Collection[];
   selectedFeedId: number | null;
@@ -24,6 +25,7 @@ interface Props {
 }
 
 export default function Sidebar({
+  open,
   feeds,
   collections,
   selectedFeedId,
@@ -134,7 +136,7 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="sidebar">
+    <aside className={open ? 'sidebar open' : 'sidebar'}>
       <div className="brand">elyfeed</div>
 
       <form className="add-feed" onSubmit={submit}>

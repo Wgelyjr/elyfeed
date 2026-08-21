@@ -10,6 +10,7 @@
   --error-bg: #fee2e2;
   --error-text: #991b1b;
   --sidebar-w: 260px;
+  --content-max: 680px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -67,6 +68,17 @@ body {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  overflow-x: hidden;
+  transition:
+    width 0.2s ease,
+    flex-basis 0.2s ease;
+}
+
+/* Collapsed: shrink to nothing so the feed column takes the full width. */
+.sidebar:not(.open) {
+  width: 0;
+  flex-basis: 0;
+  border-right: none;
 }
 
 .brand {
@@ -181,12 +193,32 @@ body {
 }
 
 .topbar h1 {
+  flex: 1;
+  min-width: 0;
   font-size: 1.1rem;
   font-weight: 600;
   margin: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Hamburger toggle for the sidebar */
+.menu-btn {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.menu-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .topbar-actions {
@@ -239,13 +271,19 @@ body {
   font-size: 0.9rem;
 }
 
-/* Item list */
+/* Item list: a full-width scroll region holding a centered, width-capped column */
+.items-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .items {
   list-style: none;
-  margin: 0;
+  margin: 0 auto;
   padding: 0;
-  overflow-y: auto;
-  flex: 1;
+  width: 100%;
+  max-width: var(--content-max);
 }
 
 .item {
@@ -554,4 +592,64 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 0.9rem;
+}
+
+/* Infinite-scroll sentinel */
+.sentinel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1px;
+  padding: 1rem 0 1.5rem;
+}
+
+/* Backdrop behind the mobile nav drawer */
+.backdrop {
+  display: none;
+}
+
+/* --- Phones / small screens: nav becomes a slide-in drawer --- */
+@media (max-width: 767px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 50;
+    width: var(--sidebar-w);
+    max-width: 85vw;
+    flex-basis: var(--sidebar-w);
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.28);
+  }
+
+  /* On phones the open/closed state is driven by the slide transform, so keep
+     the width fixed and override the desktop collapse rules. */
+  .sidebar:not(.open) {
+    width: var(--sidebar-w);
+    max-width: 85vw;
+    flex-basis: var(--sidebar-w);
+    border-right: 1px solid var(--border);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.4);
+  }
+
+  .item-main {
+    padding: 0.8rem 1rem;
+  }
+
+  .topbar {
+    padding: 0.7rem 0.9rem;
+  }
 }
