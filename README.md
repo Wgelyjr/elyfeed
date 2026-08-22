@@ -1,30 +1,28 @@
 # elyfeed
 
 A single-user RSS feed reader: a Go + Postgres backend that also serves an
-installable React (Vite + TypeScript) PWA frontend.
+installable React (Vite + TypeScript) PWA frontend. No auth, compose deployment.
 
-One binary. No auth. Point it at a Postgres, open it in a browser, and install
-it to your home screen.
 
 <p align="center">
-  <img src="docs/screenshots/all-feeds-light.png" width="920" alt="elyfeed — the All feeds view">
+  <img src="docs/screenshots/all-feeds-light.png" width="920" alt="elyfeed - the All feeds view">
 </p>
 
 ## Features
 
-- **Feeds** — add RSS 2.0 and Atom feeds one at a time, or paste a whole list
+- **Feeds** - add RSS 2.0 and Atom feeds one at a time, or paste a whole list
   of URLs in bulk. Background refresh on a fixed interval.
-- **Collections** — group feeds into named collections and read them together;
+- **Collections** - group feeds into named collections and read them together;
   move feeds between collections straight from the sidebar.
-- **Reading** — All / Unread / Read filter with unread counts, infinite scroll,
+- **Reading** - All / Unread / Read filter with unread counts, infinite scroll,
   auto-mark-as-read as items scroll into view, and a "mark visible as read"
   shortcut for the unread queue.
-- **Manage mode** — select feeds with checkboxes and bulk-delete them.
-- **Offline** — the app shell and recently fetched items are cached and
+- **Manage mode** - select feeds with checkboxes and bulk-delete them.
+- **Offline** - the app shell and recently fetched items are cached and
   restored on load (service worker + persisted React Query cache).
-- **PWA** — installable to your home screen (manifest + maskable icons).
-- **Responsive** — full desktop layout with a slide-in drawer nav on mobile.
-- **Dark mode** — follows your system color scheme.
+- **PWA** - installable to your home screen (manifest + maskable icons).
+- **Responsive** - full desktop layout with a slide-in drawer nav on mobile.
+- **Dark mode** - follows your system color scheme.
 
 ## Screenshots
 
