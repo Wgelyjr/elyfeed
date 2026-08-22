@@ -6,14 +6,34 @@ installable React (Vite + TypeScript) PWA frontend.
 One binary. No auth. Point it at a Postgres, open it in a browser, and install
 it to your home screen.
 
+<p align="center">
+  <img src="docs/screenshots/all-feeds-light.png" width="920" alt="elyfeed — the All feeds view">
+</p>
+
 ## Features
 
-- Add/remove RSS 2.0 and Atom feeds
-- Background refresh on a fixed interval
-- Read/unread tracking
-- Works offline: the app shell and recently fetched items are cached and
-  restored on load (service worker + persisted React Query cache)
-- Installable as a PWA (manifest + maskable icons)
+- **Feeds** — add RSS 2.0 and Atom feeds one at a time, or paste a whole list
+  of URLs in bulk. Background refresh on a fixed interval.
+- **Collections** — group feeds into named collections and read them together;
+  move feeds between collections straight from the sidebar.
+- **Reading** — All / Unread / Read filter with unread counts, infinite scroll,
+  auto-mark-as-read as items scroll into view, and a "mark visible as read"
+  shortcut for the unread queue.
+- **Manage mode** — select feeds with checkboxes and bulk-delete them.
+- **Offline** — the app shell and recently fetched items are cached and
+  restored on load (service worker + persisted React Query cache).
+- **PWA** — installable to your home screen (manifest + maskable icons).
+- **Responsive** — full desktop layout with a slide-in drawer nav on mobile.
+- **Dark mode** — follows your system color scheme.
+
+## Screenshots
+
+| | |
+| :---: | :---: |
+| <img src="docs/screenshots/collection-tech.png" width="440" alt="Collection"><br>**Read a whole collection** | <img src="docs/screenshots/unread-queue.png" width="440" alt="Unread queue"><br>**Unread queue + mark visible as read** |
+| <img src="docs/screenshots/bulk-add.png" width="440" alt="Bulk add"><br>**Bulk add feeds** | <img src="docs/screenshots/organize-feed.png" width="440" alt="Organize"><br>**Move feeds between collections** |
+| <img src="docs/screenshots/manage-mode.png" width="440" alt="Manage mode"><br>**Manage mode: bulk delete** | <img src="docs/screenshots/all-feeds-dark.png" width="440" alt="Dark mode"><br>**Dark mode** |
+| <img src="docs/screenshots/mobile-drawer.png" width="440" alt="Mobile"><br>**Mobile drawer** | |
 
 ## Stack
 
