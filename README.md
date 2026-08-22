@@ -1,5 +1,7 @@
 # elyfeed
 
+I'm sorry about the bad name
+
 A single-user RSS feed reader: a Go + Postgres backend that also serves an
 installable React (Vite + TypeScript) PWA frontend. No auth, compose deployment.
 
