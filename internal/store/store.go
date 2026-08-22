@@ -60,7 +60,7 @@ type IncomingItem struct {
 type ItemQuery struct {
 	FeedID       *int64 // filter to one feed when set
 	CollectionID *int64 // filter to feeds in one collection when set
-	Unread       *bool  // filter by read state when set
+	Unread       *bool  // when set, filter to unread (true) or read (false) items
 	Limit        int
 	Offset       int
 }
@@ -93,5 +93,9 @@ type Store interface {
 
 	ListItems(ctx context.Context, q ItemQuery) ([]Item, int, error)
 	SetItemRead(ctx context.Context, id int64, read bool) error
+	// SetItemsRead sets the read state for multiple items in a single
+	// statement. Missing IDs are ignored. It returns the number of rows
+	// actually changed.
+	SetItemsRead(ctx context.Context, ids []int64, read bool) (int, error)
 	UnreadCount(ctx context.Context) (int, error)
 }

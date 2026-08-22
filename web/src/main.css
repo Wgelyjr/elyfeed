@@ -233,6 +233,49 @@ body {
   white-space: nowrap;
 }
 
+/* Context bar above the item list (Unread queue actions) */
+.queue-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+/* Read-state filter (segmented control) */
+.read-filter {
+  display: flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.read-filter button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding: 0.35rem 0.65rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.read-filter button + button {
+  border-left: 1px solid var(--border);
+}
+
+.read-filter button:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.read-filter button.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
 .btn {
   border: 1px solid var(--border);
   background: var(--panel);
@@ -651,5 +694,10 @@ body {
 
   .topbar {
     padding: 0.7rem 0.9rem;
+  }
+
+  /* Free up room in the topbar for the read-state filter. */
+  .unread-badge {
+    display: none;
   }
 }

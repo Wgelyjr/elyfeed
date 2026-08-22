@@ -89,7 +89,7 @@ export const api = {
     if (params.feed_id != null) qs.set('feed_id', String(params.feed_id));
     if (params.collection_id != null)
       qs.set('collection_id', String(params.collection_id));
-    if (params.unread) qs.set('unread', 'true');
+    if (params.unread != null) qs.set('unread', String(params.unread));
     if (params.limit != null) qs.set('limit', String(params.limit));
     if (params.offset != null) qs.set('offset', String(params.offset));
     const q = qs.toString();
@@ -100,6 +100,15 @@ export const api = {
     request<{ ok: boolean }>(`/api/items/${id}/read`, {
       method: 'POST',
       body: JSON.stringify({ read }),
+    }),
+
+  bulkSetItemsRead: (
+    ids: number[],
+    read: boolean,
+  ): Promise<{ ok: boolean; updated: number }> =>
+    request<{ ok: boolean; updated: number }>('/api/items/bulk-read', {
+      method: 'POST',
+      body: JSON.stringify({ ids, read }),
     }),
 
   unreadCount: (): Promise<UnreadCountResponse> =>

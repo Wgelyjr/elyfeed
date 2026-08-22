@@ -200,7 +200,7 @@ func (s *Postgres) ListItems(ctx context.Context, q ItemQuery) ([]Item, int, err
 	}
 	if q.Unread != nil {
 		conds = append(conds, fmt.Sprintf("i.read = $%d", len(args)+1))
-		args = append(args, *q.Unread)
+		args = append(args, !*q.Unread)
 	}
 	where := ""
 	if len(conds) > 0 {
@@ -261,6 +261,19 @@ func (s *Postgres) SetItemRead(ctx context.Context, id int64, read bool) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Postgres) SetItemsRead(ctx context.Context, ids []int64, read bool) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	ph := placeholders(len(ids))
+	sql := `UPDATE items SET read = $` + itoa(len(ids)+1) + ` WHERE id IN (` + ph + `)`
+	tag, err := s.pool.Exec(ctx, sql, append(toAny(ids), read)...)
+	if err != nil {
+		return 0, fmt.Errorf("set items read: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func (s *Postgres) UnreadCount(ctx context.Context) (int, error) {

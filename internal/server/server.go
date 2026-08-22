@@ -49,6 +49,7 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/items", s.handleListItems)
 	mux.HandleFunc("GET /api/items/unread-count", s.handleUnreadCount)
 	mux.HandleFunc("POST /api/items/{id}/read", s.handleSetItemRead)
+	mux.HandleFunc("POST /api/items/bulk-read", s.handleBulkSetItemRead)
 	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
@@ -278,8 +279,11 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 		}
 		q.CollectionID = &id
 	}
-	if r.URL.Query().Get("unread") == "true" {
+	switch r.URL.Query().Get("unread") {
+	case "true":
 		q.Unread = boolPtr(true)
+	case "false":
+		q.Unread = boolPtr(false)
 	}
 
 	q.Limit = queryInt(r, "limit", 50, 1, 200)
@@ -322,6 +326,27 @@ func (s *Server) handleSetItemRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleBulkSetItemRead(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs  []int64 `json:"ids"`
+		Read bool    `json:"read"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": 0})
+		return
+	}
+	n, err := s.store.SetItemsRead(r.Context(), req.IDs, req.Read)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": n})
 }
 
 // --- refresh ---
