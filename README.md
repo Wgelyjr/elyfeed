@@ -116,15 +116,55 @@ PORT=9000 REFRESH_INTERVAL=5m DATABASE_URL="postgres://user:pass@localhost:5432/
 
 ## API
 
+`GET /api` (or `GET /api/`) returns a JSON index of all endpoints — the API is
+self-describing, which makes it easy for LLMs and other automation to discover.
+
 | Method   | Path                     | Description                                   |
 | -------- | ------------------------ | --------------------------------------------- |
+| `GET`    | `/api`                   | Endpoint index (JSON)                         |
 | `GET`    | `/api/feeds`             | List feeds                                    |
 | `POST`   | `/api/feeds`             | Add a feed (fetches + seeds it), body `{url}` |
 | `DELETE` | `/api/feeds/{id}`        | Remove a feed and its items                   |
-| `GET`    | `/api/items`             | List items; query `feed_id`, `unread`, `limit`, `offset` |
+| `GET`    | `/api/items`             | List items; query `feed_id`, `collection_id`, `unread`, `since`, `until` (RFC3339), `limit`, `offset` |
 | `GET`    | `/api/items/unread-count`| Total unread item count                       |
 | `POST`   | `/api/items/{id}/read`   | Set an item read/unread, body `{read}`        |
+| `GET`    | `/api/digest`            | LLM-ready digest of a collection; query `collection_id` (required), `since`, `until` (RFC3339, default: last 24h), `format` (`markdown` default / `json`), `limit` |
 | `POST`   | `/api/refresh`           | Refresh all feeds now                         |
+
+### Automation (LLM digests, cron jobs)
+
+The API is designed to be consumed directly by external automation. A daily
+digest is one request:
+
+```sh
+# Markdown digest of everything new in collection 1 over the last 24h
+curl -s "http://localhost:8180/api/digest?collection_id=1"
+
+# Explicit window (RFC3339), as JSON for further processing
+curl -s "http://localhost:8180/api/digest?collection_id=1&since=2026-08-22T09:00:00Z&until=2026-08-23T09:00:00Z&format=json"
+
+# Or just the raw time-window query, for any collection/feed
+curl -s "http://localhost:8180/api/items?collection_id=1&since=2026-08-22T09:00:00Z&limit=100"
+```
+
+The markdown output is ready to paste into an LLM prompt:
+
+```markdown
+# Digest — News (2026-08-22T09:00:00Z → 2026-08-23T09:00:00Z)
+
+## Feed A
+
+- [Title](https://…) — author, 2026-08-22 10:00 UTC
+  > content excerpt…
+```
+
+Notes:
+
+- Items without a publication date are bounded by their fetch time instead,
+  so undated feeds are never silently dropped from a window.
+- Item content is plain text, truncated (~2000 chars); digest excerpts are
+  trimmed to ~300 chars.
+- There is no auth: keep the port unreachable from untrusted networks.
 
 ## Project layout
 

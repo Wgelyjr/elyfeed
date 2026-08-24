@@ -202,6 +202,19 @@ func (s *Postgres) ListItems(ctx context.Context, q ItemQuery) ([]Item, int, err
 		conds = append(conds, fmt.Sprintf("i.read = $%d", len(args)+1))
 		args = append(args, !*q.Unread)
 	}
+	// Undated items (published_at NULL) are bounded by fetched_at.
+	if q.Since != nil {
+		conds = append(conds, fmt.Sprintf(
+			"(i.published_at >= $%d OR (i.published_at IS NULL AND i.fetched_at >= $%d))",
+			len(args)+1, len(args)+2))
+		args = append(args, *q.Since, *q.Since)
+	}
+	if q.Until != nil {
+		conds = append(conds, fmt.Sprintf(
+			"(i.published_at <= $%d OR (i.published_at IS NULL AND i.fetched_at <= $%d))",
+			len(args)+1, len(args)+2))
+		args = append(args, *q.Until, *q.Until)
+	}
 	where := ""
 	if len(conds) > 0 {
 		where = " WHERE " + strings.Join(conds, " AND ")
@@ -297,6 +310,24 @@ func (s *Postgres) CreateCollection(ctx context.Context, name string) (*Collecti
 			return nil, fmt.Errorf("%w: %q already exists", ErrConflict, name)
 		}
 		return nil, fmt.Errorf("create collection: %w", err)
+	}
+	return &c, nil
+}
+
+func (s *Postgres) GetCollection(ctx context.Context, id int64) (*Collection, error) {
+	var c Collection
+	err := s.pool.QueryRow(ctx,
+		`SELECT c.id, c.name, c.created_at, count(f.feed_id)
+		 FROM collections c
+		 LEFT JOIN feed_collections f ON f.collection_id = c.id
+		 WHERE c.id = $1
+		 GROUP BY c.id, c.name, c.created_at`, id,
+	).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount)
+	if err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get collection: %w", err)
 	}
 	return &c, nil
 }

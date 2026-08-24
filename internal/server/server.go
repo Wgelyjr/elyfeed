@@ -4,13 +4,16 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"mime"
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"elyfeed/internal/refresh"
 	"elyfeed/internal/store"
@@ -50,10 +53,9 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/items/unread-count", s.handleUnreadCount)
 	mux.HandleFunc("POST /api/items/{id}/read", s.handleSetItemRead)
 	mux.HandleFunc("POST /api/items/bulk-read", s.handleBulkSetItemRead)
+	mux.HandleFunc("GET /api/digest", s.handleDigest)
 	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
-	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
-		writeError(w, http.StatusNotFound, "not found")
-	})
+	mux.HandleFunc("GET /api/", s.handleAPIIndex)
 	mux.Handle("GET /", spaHandler{assets: assets})
 
 	return withCORS(mux)
@@ -285,6 +287,18 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	case "false":
 		q.Unread = boolPtr(false)
 	}
+	since, err := parseTimeParam("since", r.URL.Query().Get("since"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	q.Since = since
+	until, err := parseTimeParam("until", r.URL.Query().Get("until"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	q.Until = until
 
 	q.Limit = queryInt(r, "limit", 50, 1, 200)
 	q.Offset = queryInt(r, "offset", 0, 0, 1<<30)
@@ -349,6 +363,136 @@ func (s *Server) handleBulkSetItemRead(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": n})
 }
 
+// handleDigest returns the recent items of one collection as a single
+// LLM-ready payload: a markdown digest (default) or the raw item list as JSON.
+// Query params: collection_id (required), since, until (RFC3339; defaults to
+// the last 24h), format (markdown|json), limit.
+func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	cid, err := strconv.ParseInt(q.Get("collection_id"), 10, 64)
+	if err != nil || cid <= 0 {
+		writeError(w, http.StatusBadRequest, "collection_id must be a positive integer")
+		return
+	}
+	collection, err := s.store.GetCollection(r.Context(), cid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "collection not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	now := time.Now().UTC()
+	since := now.Add(-24 * time.Hour)
+	if raw := q.Get("since"); raw != "" {
+		t, err := parseTimeParam("since", raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		since = *t
+	}
+	until := now
+	if raw := q.Get("until"); raw != "" {
+		t, err := parseTimeParam("until", raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		until = *t
+	}
+
+	items, _, err := s.store.ListItems(r.Context(), store.ItemQuery{
+		CollectionID: &cid,
+		Since:        &since,
+		Until:        &until,
+		Limit:        queryInt(r, "limit", 50, 1, 200),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if items == nil {
+		items = []store.Item{}
+	}
+
+	format := q.Get("format")
+	if format == "" {
+		format = "markdown"
+	}
+	switch format {
+	case "markdown":
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, renderDigestMarkdown(collection.Name, since, until, items))
+	case "json":
+		writeJSON(w, http.StatusOK, map[string]any{
+			"collection": collection.Name,
+			"since":      since.UTC().Format(time.RFC3339),
+			"until":      until.UTC().Format(time.RFC3339),
+			"count":      len(items),
+			"items":      items,
+		})
+	default:
+		writeError(w, http.StatusBadRequest, "format must be markdown or json")
+	}
+}
+
+// --- api index ---
+
+// apiEndpoints is the discovery document served at GET /api (and listed in
+// the README). Keep it in sync with the routes registered in New.
+var apiEndpoints = []struct {
+	Method      string
+	Path        string
+	Description string
+}{
+	{"GET", "/api", "This index: all available endpoints"},
+	{"GET", "/api/feeds", "List feeds (with collection IDs)"},
+	{"POST", "/api/feeds", "Add a feed (fetches + seeds it), body {\"url\": \"...\"}"},
+	{"POST", "/api/feeds/bulk", "Add many feeds, body {\"urls\": [\"...\", ...]}"},
+	{"POST", "/api/feeds/bulk-delete", "Delete feeds by ID, body {\"ids\": [1, 2]}"},
+	{"PUT", "/api/feeds/{id}/collections", "Set a feed's collections, body {\"collection_ids\": [1]}"},
+	{"DELETE", "/api/feeds/{id}", "Delete a feed and its items"},
+	{"GET", "/api/collections", "List collections (with feed counts)"},
+	{"POST", "/api/collections", "Create a collection, body {\"name\": \"...\"}"},
+	{"PATCH", "/api/collections/{id}", "Rename a collection, body {\"name\": \"...\"}"},
+	{"DELETE", "/api/collections/{id}", "Delete a collection"},
+	{"GET", "/api/items", "List items. Query: feed_id, collection_id, unread (true|false), since, until (RFC3339), limit (1-200), offset"},
+	{"GET", "/api/items/unread-count", "Total unread item count"},
+	{"POST", "/api/items/{id}/read", "Set an item's read state, body {\"read\": true}"},
+	{"POST", "/api/items/bulk-read", "Set read state for many items, body {\"ids\": [1, 2], \"read\": true}"},
+	{"GET", "/api/digest", "LLM-ready digest of a collection's recent items. Query: collection_id (required), since, until (RFC3339; default: last 24h), format (markdown|json), limit"},
+	{"POST", "/api/refresh", "Refresh all feeds now"},
+}
+
+// handleAPIIndex is the catch-all for GET /api/*. It serves the endpoint
+// index at the API base (GET /api, GET /api/) so the surface is discoverable
+// by humans, LLMs, and other automation, and 404s for anything else.
+func (s *Server) handleAPIIndex(w http.ResponseWriter, r *http.Request) {
+	p := strings.TrimSuffix(path.Clean(r.URL.Path), "/")
+	if p != "/api" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	endpoints := make([]map[string]string, 0, len(apiEndpoints))
+	for _, e := range apiEndpoints {
+		endpoints = append(endpoints, map[string]string{
+			"method":      e.Method,
+			"path":        e.Path,
+			"description": e.Description,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":        "elyfeed",
+		"description": "Single-user RSS reader. Pull recent items by time window (GET /api/items?since=...&until=...) or get a ready-to-use digest per collection (GET /api/digest).",
+		"endpoints":   endpoints,
+	})
+}
+
 // --- refresh ---
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -358,6 +502,70 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"refreshed": ok})
+}
+
+// renderDigestMarkdown renders items as a markdown digest grouped by feed
+// (alphabetical), newest first within each feed.
+func renderDigestMarkdown(collection string, since, until time.Time, items []store.Item) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Digest — %s (%s → %s)\n\n",
+		collection, since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339))
+	if len(items) == 0 {
+		b.WriteString("_No items in this window._\n")
+		return b.String()
+	}
+
+	sorted := make([]store.Item, len(items))
+	copy(sorted, items)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].FeedTitle != sorted[j].FeedTitle {
+			return sorted[i].FeedTitle < sorted[j].FeedTitle
+		}
+		return itemTime(sorted[i]).After(itemTime(sorted[j]))
+	})
+
+	lastFeed := ""
+	for _, it := range sorted {
+		if it.FeedTitle != lastFeed {
+			lastFeed = it.FeedTitle
+			fmt.Fprintf(&b, "## %s\n\n", it.FeedTitle)
+		}
+		line := fmt.Sprintf("- [%s](%s)", it.Title, it.Link)
+		if it.Author != "" {
+			line += " — " + it.Author
+		}
+		line += ", " + itemTime(it).UTC().Format("2006-01-02 15:04 UTC")
+		b.WriteString(line + "\n")
+		if excerpt := digestExcerpt(it.Content); excerpt != "" {
+			b.WriteString("  > " + excerpt + "\n")
+		}
+	}
+	return b.String()
+}
+
+// itemTime is the timestamp shown for an item: its publication date, falling
+// back to the fetch time when the feed provides none.
+func itemTime(it store.Item) time.Time {
+	if it.PublishedAt != nil {
+		return *it.PublishedAt
+	}
+	return it.FetchedAt
+}
+
+// digestExcerpt trims item content to a short single-line excerpt so digests
+// stay small enough for LLM context windows. Whitespace (including newlines)
+// is collapsed so the excerpt never breaks the markdown line it lives on.
+func digestExcerpt(content string) string {
+	c := strings.Join(strings.Fields(content), " ")
+	const maxRunes = 300
+	if len([]rune(c)) <= maxRunes {
+		return c
+	}
+	r := []rune(c)[:maxRunes]
+	if i := strings.LastIndex(string(r), " "); i > 0 {
+		r = r[:i]
+	}
+	return string(r) + "…"
 }
 
 // --- SPA fallback ---
@@ -411,6 +619,20 @@ func parseID(w http.ResponseWriter, raw string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+// parseTimeParam parses an optional RFC3339 timestamp query parameter. It
+// returns nil when the parameter is absent and an error when it is present
+// but malformed.
+func parseTimeParam(key, raw string) (*time.Time, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be an RFC3339 timestamp (e.g. 2026-08-22T00:00:00Z)", key)
+	}
+	return &t, nil
 }
 
 func boolPtr(b bool) *bool { return &b }

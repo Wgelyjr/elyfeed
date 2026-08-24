@@ -61,8 +61,12 @@ type ItemQuery struct {
 	FeedID       *int64 // filter to one feed when set
 	CollectionID *int64 // filter to feeds in one collection when set
 	Unread       *bool  // when set, filter to unread (true) or read (false) items
-	Limit        int
-	Offset       int
+	// Since/Until bound the time window. Items whose published_at is NULL are
+	// compared by fetched_at instead (some feeds carry no publication date).
+	Since  *time.Time
+	Until  *time.Time
+	Limit  int
+	Offset int
 }
 
 // Store is the persistence interface used by the HTTP layer and the refresher.
@@ -81,6 +85,8 @@ type Store interface {
 
 	// Collections
 	CreateCollection(ctx context.Context, name string) (*Collection, error)
+	// GetCollection returns a single collection by ID (ErrNotFound when missing).
+	GetCollection(ctx context.Context, id int64) (*Collection, error)
 	// ListCollections returns all collections, each with its feed count.
 	ListCollections(ctx context.Context) ([]Collection, error)
 	RenameCollection(ctx context.Context, id int64, name string) (*Collection, error)
