@@ -154,10 +154,10 @@ export default function App() {
     },
   });
 
-  // Bulk mark-read fired as items enter the viewport (all/read views) or via
-  // the "Mark visible as read" button (unread queue view). We flip the read
-  // flag in the cache immediately (no refetch) so the dot disappears the
-  // moment an item becomes visible, then persist in the background.
+  // Bulk mark-read fired as items scroll fully past the viewport (all/read
+  // views) or via the "Mark visible as read" button (unread queue view). We
+  // flip the read flag in the cache immediately (no refetch) so the dot
+  // disappears as soon as an item is passed, then persist in the background.
   const markRead = useMutation({
     mutationFn: (ids: number[]) => api.bulkSetItemsRead(ids, true),
     onMutate: (ids) => {

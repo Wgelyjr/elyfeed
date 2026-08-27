@@ -28,8 +28,8 @@ function formatDate(iso: string | null): string {
   });
 }
 
-// How long to wait after the last item enters the viewport before sending
-// the batched mark-read request.
+// How long to wait after the last item scrolls past the viewport before
+// sending the batched mark-read request.
 const FLUSH_MS = 250;
 
 export default function ItemList({
@@ -94,31 +94,23 @@ export default function ItemList({
     return () => observer.disconnect();
   }, [hasMore]);
 
-  // Mark items read once they enter the viewport, so the list always matches
-  // what the reader has actually seen. Items skipped by a very fast scroll
-  // are picked up once they end up fully above the visible top. Items still
-  // below the fold are left unread. Disabled in the Unread queue view, where
-  // scrolling should not silently drain the list.
+  // Mark items read only once they have scrolled fully above the viewport,
+  // i.e. after the reader has actually passed them. Items peeking in at the
+  // bottom edge or still below the fold stay unread. Disabled in the Unread
+  // queue view, where scrolling should not silently drain the list.
   useEffect(() => {
     if (!hasList || !autoMark) return;
     const root = scrollRef.current;
     if (!root) return;
 
+    // The observer is only a trigger: it fires whenever any item's visibility
+    // changes, and on the initial observation. Each firing sweeps the list
+    // and queues every unread item that sits fully above the visible top —
+    // which also catches items a fast scroll carries from below the fold to
+    // above it without a sampled intersection in between.
     const observer = new IntersectionObserver(
-      (entries) => {
+      () => {
         let added = false;
-        for (const entry of entries) {
-          const el = entry.target as HTMLElement;
-          if (!entry.isIntersecting || el.dataset.read === 'true') continue;
-          const id = Number(el.dataset.id);
-          if (!Number.isFinite(id)) continue;
-          pendingRef.current.add(id);
-          added = true;
-        }
-        // Catch-up sweep: the observer never reports an item that a fast
-        // scroll carries from below the fold to above it without a sampled
-        // intersection in between, so unread items that ended up fully above
-        // the visible top are marked here as well.
         const rootTop = root.getBoundingClientRect().top;
         root.querySelectorAll('li[data-id]').forEach((node) => {
           const el = node as HTMLElement;
