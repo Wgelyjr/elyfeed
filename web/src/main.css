@@ -37,6 +37,7 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  background: var(--bg);
 }
 
 body {
@@ -56,6 +57,7 @@ body {
 .app {
   display: flex;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -69,6 +71,9 @@ body {
   flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
+  /* Clear the status bar / home-indicator zones in standalone PWA mode. */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
   transition:
     width 0.2s ease,
     flex-basis 0.2s ease;
@@ -188,6 +193,7 @@ body {
   justify-content: space-between;
   gap: 1rem;
   padding: 0.9rem 1.25rem;
+  padding-top: calc(0.9rem + env(safe-area-inset-top));
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
@@ -319,6 +325,9 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Keep the last item clear of the home-indicator / gesture area. */
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 .items {
@@ -694,6 +703,7 @@ body {
 
   .topbar {
     padding: 0.7rem 0.9rem;
+    padding-top: calc(0.7rem + env(safe-area-inset-top));
   }
 
   /* Free up room in the topbar for the read-state filter. */
