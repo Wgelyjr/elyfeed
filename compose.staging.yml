@@ -1,0 +1,46 @@
+# Staging deployment (chesster, /opt/elyfeed-staging, port 2999).
+#
+# Isolated from the production stack in /opt/elyfeed: separate container
+# names, image tag, and volume, so deploying here never touches the running
+# production deployment.
+#
+# ELYFEED_DEV is enabled: no SMTP, email verification links are printed to
+# the container log.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: elyfeed-staging-db
+    environment:
+      POSTGRES_USER: elyfeed
+      POSTGRES_PASSWORD: elyfeed
+      POSTGRES_DB: elyfeed
+    volumes:
+      - elyfeed_staging_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U elyfeed -d elyfeed"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: localhost/elyfeed-staging:latest
+    container_name: elyfeed-staging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://elyfeed:elyfeed@db:5432/elyfeed?sslmode=disable
+      HOST: 0.0.0.0
+      PORT: "8080"
+      REFRESH_INTERVAL: 10m
+      ELYFEED_DEV: "true"
+      BASE_URL: "http://10.55.1.13:2999"
+    ports:
+      - "2999:8080"
+    restart: unless-stopped
+
+volumes:
+  elyfeed_staging_pgdata:
