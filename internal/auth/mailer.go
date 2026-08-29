@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strconv"
+	"strings"
 )
 
 // Mailer delivers transactional email (verification links, password resets).
@@ -35,13 +37,14 @@ func (m *SMTPMailer) Send(to, subject, body string) error {
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s",
 		m.from, to, subject, body)
 	addr := net.JoinHostPort(m.host, strconv.Itoa(m.port))
+	envelope := envelopeAddress(m.from)
 
 	if !m.implicitTLS {
 		var a smtp.Auth
 		if m.user != "" {
 			a = smtp.PlainAuth("", m.user, m.pass, m.host)
 		}
-		if err := smtp.SendMail(addr, a, m.from, []string{to}, []byte(msg)); err != nil {
+		if err := smtp.SendMail(addr, a, envelope, []string{to}, []byte(msg)); err != nil {
 			return fmt.Errorf("smtp send: %w", err)
 		}
 		return nil
@@ -62,7 +65,7 @@ func (m *SMTPMailer) Send(to, subject, body string) error {
 			return fmt.Errorf("smtp auth: %w", err)
 		}
 	}
-	if err := client.Mail(m.from); err != nil {
+	if err := client.Mail(envelope); err != nil {
 		return fmt.Errorf("smtp mail: %w", err)
 	}
 	if err := client.Rcpt(to); err != nil {
@@ -79,6 +82,17 @@ func (m *SMTPMailer) Send(to, subject, body string) error {
 		return fmt.Errorf("smtp write close: %w", err)
 	}
 	return client.Quit()
+}
+
+// envelopeAddress extracts the bare SMTP address from a from-address that may
+// carry a display name ("Display <addr>" or "<addr>"). The SMTP MAIL FROM
+// envelope command requires a bare address; the display form is only valid in
+// the From: header. A plain address is returned trimmed and unchanged.
+func envelopeAddress(from string) string {
+	if a, err := mail.ParseAddress(from); err == nil && a.Address != "" {
+		return a.Address
+	}
+	return strings.TrimSpace(from)
 }
 
 // ConsoleMailer prints emails to the log. It is the development fallback
