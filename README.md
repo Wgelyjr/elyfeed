@@ -113,6 +113,29 @@ Notes:
   `compose.yml` — and put a TLS-terminating reverse proxy in front (see
   [Security](#security)).
 
+## Staging
+
+A staging deployment of the `staging` branch runs on the `chesster` host at
+<http://10.55.1.13:2999>, kept up by the `elyfeed-staging.service` systemd
+unit. It is fully isolated from the production stack — separate checkout
+(`/opt/elyfeed-staging`), container names, image tag
+(`localhost/elyfeed-staging:latest`), and data volume — via
+`compose.staging.yml`.
+
+To deploy changes to staging, on the host run:
+
+```sh
+cd /opt/elyfeed-staging && ./scripts/deploy-staging.sh
+```
+
+The script pulls the `staging` branch, rebuilds the image, and restarts the
+stack. Staging runs with `ELYFEED_DEV=true` (no SMTP), so email
+verification links are printed to the container log instead of being sent:
+
+```sh
+podman logs elyfeed-staging | grep -o 'http://[^"]*verify?token=[a-f0-9]*' | tail -1
+```
+
 ## Configuration
 
 All configuration is via environment variables. The app refuses to start

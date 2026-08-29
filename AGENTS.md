@@ -44,6 +44,22 @@ make down    # stop/remove; data volume is preserved
 - Override host port: `ELYFEED_PORT=9000 make up`
 - Discard the database too: `podman compose down -v`
 
+### Staging (chesster host)
+
+Staging runs the `staging` branch at http://10.55.1.13:2999, isolated from
+production via `compose.staging.yml` (own containers, image tag, and volume).
+
+```sh
+# On the staging host: pull the staging branch, rebuild, and redeploy.
+cd /opt/elyfeed-staging && ./scripts/deploy-staging.sh
+```
+
+- `ELYFEED_DEV=true` there, so verification links print to `podman logs
+  elyfeed-staging` instead of being emailed.
+- The stack is kept up by the `elyfeed-staging.service` systemd unit.
+- Never run `make up` / `podman compose up` in `/opt/elyfeed` (production)
+  when targeting staging, and vice versa.
+
 ## Notes
 
 - `GET /api` returns a JSON index of all endpoints (self-describing API);
