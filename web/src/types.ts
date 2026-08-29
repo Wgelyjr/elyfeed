@@ -45,3 +45,12 @@ export interface ItemsResponse {
 export interface UnreadCountResponse {
   count: number;
 }
+
+export interface User {
+  id: number;
+  email: string;
+  display_name: string;
+  role: string;
+  email_verified: boolean;
+  created_at: string;
+}

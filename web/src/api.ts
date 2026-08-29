@@ -5,10 +5,30 @@ import type {
   Item,
   ItemsResponse,
   UnreadCountResponse,
+  User,
 } from './types';
 
 // Thin typed wrapper over the JSON API. All requests are same-origin (the Go
 // server serves both the API and the app), so no credentials/CORS juggling.
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+// Global handler for 401 responses (session expired / logged out elsewhere).
+// The app registers it once; it must be idempotent because several in-flight
+// requests can 401 at the same time.
+let onUnauthorized: (() => void) | null = null;
+
+export function setOnUnauthorized(handler: () => void): void {
+  onUnauthorized = handler;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -23,7 +43,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // non-JSON error body; keep the status message
     }
-    throw new Error(msg);
+    // Auth endpoints surface their own errors to the caller (the login form
+    // needs to show "invalid credentials"); only non-auth 401s mean the
+    // session is gone.
+    if (res.status === 401 && !path.startsWith('/api/auth/')) {
+      onUnauthorized?.();
+    }
+    throw new ApiError(res.status, msg);
   }
   return (await res.json()) as T;
 }
@@ -116,6 +142,38 @@ export const api = {
 
   refresh: (): Promise<{ refreshed: number }> =>
     request<{ refreshed: number }>('/api/refresh', { method: 'POST' }),
+
+  // Auth. `me` returns null when not signed in instead of throwing, since a
+  // 401 on this call just means "no session".
+  me: async (): Promise<User | null> => {
+    try {
+      return await request<User>('/api/auth/me');
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return null;
+      throw err;
+    }
+  },
+
+  login: (email: string, password: string): Promise<User> =>
+    request<User>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+
+  register: (email: string, name: string, password: string): Promise<{ message: string }> =>
+    request<{ message: string }>('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email, name, password }),
+    }),
+
+  logout: (): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+
+  forgotPassword: (email: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
 };
 
 export type { Item };

@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -23,14 +25,14 @@ func NewPostgres(pool *pgxpool.Pool) *Postgres {
 	return &Postgres{pool: pool}
 }
 
-func (s *Postgres) CreateFeed(ctx context.Context, url, title, siteURL string) (*Feed, error) {
+func (s *Postgres) CreateFeed(ctx context.Context, userID int64, url, title, siteURL string) (*Feed, error) {
 	var f Feed
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO feeds (url, title, site_url) VALUES ($1, $2, $3)
-		 ON CONFLICT (url) DO UPDATE SET title = EXCLUDED.title, site_url = EXCLUDED.site_url
-		 RETURNING id, url, title, site_url, last_fetched, created_at`,
-		url, title, siteURL,
-	).Scan(&f.ID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt)
+		`INSERT INTO feeds (user_id, url, title, site_url) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (user_id, url) DO UPDATE SET title = EXCLUDED.title, site_url = EXCLUDED.site_url
+		 RETURNING id, user_id, url, title, site_url, last_fetched, created_at`,
+		userID, url, title, siteURL,
+	).Scan(&f.ID, &f.UserID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create feed: %w", err)
 	}
@@ -38,10 +40,10 @@ func (s *Postgres) CreateFeed(ctx context.Context, url, title, siteURL string) (
 	return &f, nil
 }
 
-func (s *Postgres) ListFeeds(ctx context.Context) ([]Feed, error) {
+func (s *Postgres) ListFeeds(ctx context.Context, userID int64) ([]Feed, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, url, title, site_url, last_fetched, created_at
-		 FROM feeds ORDER BY title ASC, id ASC`)
+		`SELECT id, user_id, url, title, site_url, last_fetched, created_at
+		 FROM feeds WHERE user_id = $1 ORDER BY title ASC, id ASC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list feeds: %w", err)
 	}
@@ -50,7 +52,7 @@ func (s *Postgres) ListFeeds(ctx context.Context) ([]Feed, error) {
 	out := make([]Feed, 0)
 	for rows.Next() {
 		var f Feed
-		if err := rows.Scan(&f.ID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.UserID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan feed: %w", err)
 		}
 		out = append(out, f)
@@ -73,6 +75,29 @@ func (s *Postgres) ListFeeds(ctx context.Context) ([]Feed, error) {
 		} else {
 			out[i].CollectionIDs = []int64{}
 		}
+	}
+	return out, nil
+}
+
+// ListAllFeeds returns every feed across all users, with no collection data.
+func (s *Postgres) ListAllFeeds(ctx context.Context) ([]Feed, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, user_id, url, title, site_url, last_fetched, created_at FROM feeds`)
+	if err != nil {
+		return nil, fmt.Errorf("list all feeds: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Feed, 0)
+	for rows.Next() {
+		var f Feed
+		if err := rows.Scan(&f.ID, &f.UserID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan feed: %w", err)
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate feeds: %w", err)
 	}
 	return out, nil
 }
@@ -105,8 +130,8 @@ func (s *Postgres) feedCollectionMap(ctx context.Context, feedIDs []int64) (map[
 	return m, nil
 }
 
-func (s *Postgres) DeleteFeed(ctx context.Context, id int64) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM feeds WHERE id = $1`, id)
+func (s *Postgres) DeleteFeed(ctx context.Context, userID, id int64) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM feeds WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
 		return fmt.Errorf("delete feed: %w", err)
 	}
@@ -116,41 +141,58 @@ func (s *Postgres) DeleteFeed(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (s *Postgres) DeleteFeeds(ctx context.Context, ids []int64) (int, error) {
+func (s *Postgres) DeleteFeeds(ctx context.Context, userID int64, ids []int64) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
 	ph := placeholders(len(ids))
-	tag, err := s.pool.Exec(ctx, `DELETE FROM feeds WHERE id IN (`+ph+`)`, toAny(ids)...)
+	sql := `DELETE FROM feeds WHERE user_id = $` + itoa(len(ids)+1) + ` AND id IN (` + ph + `)`
+	args := append(toAny(ids), userID)
+	tag, err := s.pool.Exec(ctx, sql, args...)
 	if err != nil {
 		return 0, fmt.Errorf("delete feeds: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }
 
-// SetFeedCollections replaces the collections a feed belongs to.
-func (s *Postgres) SetFeedCollections(ctx context.Context, feedID int64, collectionIDs []int64) error {
+// SetFeedCollections replaces the collections a feed belongs to. Only
+// collections owned by the user are linked; foreign IDs are ignored.
+func (s *Postgres) SetFeedCollections(ctx context.Context, userID, feedID int64, collectionIDs []int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op if committed
 
+	var ok bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM feeds WHERE id = $1 AND user_id = $2)`, feedID, userID,
+	).Scan(&ok); err != nil {
+		return fmt.Errorf("check feed owner: %w", err)
+	}
+	if !ok {
+		return ErrNotFound
+	}
+
 	if _, err := tx.Exec(ctx, `DELETE FROM feed_collections WHERE feed_id = $1`, feedID); err != nil {
 		return fmt.Errorf("clear feed collections: %w", err)
 	}
-	for _, cid := range collectionIDs {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO feed_collections (feed_id, collection_id) VALUES ($1, $2)
-			 ON CONFLICT (feed_id, collection_id) DO NOTHING`, feedID, cid); err != nil {
+	if len(collectionIDs) > 0 {
+		ph := placeholders(len(collectionIDs))
+		sql := `INSERT INTO feed_collections (feed_id, collection_id)
+			 SELECT $1, id FROM collections WHERE user_id = $2 AND id IN (`+ph+`)
+			 ON CONFLICT (feed_id, collection_id) DO NOTHING`
+		args := append([]any{feedID, userID}, toAny(collectionIDs)...)
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
 			return fmt.Errorf("set feed collection: %w", err)
 		}
 	}
 	return tx.Commit(ctx)
 }
 
-func (s *Postgres) TouchFeed(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE feeds SET last_fetched = now() WHERE id = $1`, id)
+func (s *Postgres) TouchFeed(ctx context.Context, userID, id int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE feeds SET last_fetched = now() WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
 		return fmt.Errorf("touch feed: %w", err)
 	}
@@ -185,9 +227,11 @@ func (s *Postgres) UpsertItems(ctx context.Context, feedID int64, items []Incomi
 	return inserted, nil
 }
 
-func (s *Postgres) ListItems(ctx context.Context, q ItemQuery) ([]Item, int, error) {
-	var conds []string
-	var args []any
+func (s *Postgres) ListItems(ctx context.Context, userID int64, q ItemQuery) ([]Item, int, error) {
+	// Every result is scoped to the caller's feeds; this condition is always
+	// present and must stay first so its $1 placeholder is stable.
+	conds := []string{"f.user_id = $1"}
+	args := []any{userID}
 
 	if q.FeedID != nil {
 		conds = append(conds, fmt.Sprintf("i.feed_id = $%d", len(args)+1))
@@ -215,14 +259,11 @@ func (s *Postgres) ListItems(ctx context.Context, q ItemQuery) ([]Item, int, err
 			len(args)+1, len(args)+2))
 		args = append(args, *q.Until, *q.Until)
 	}
-	where := ""
-	if len(conds) > 0 {
-		where = " WHERE " + strings.Join(conds, " AND ")
-	}
+	where := " WHERE " + strings.Join(conds, " AND ")
+	from := " FROM items i LEFT JOIN feeds f ON f.id = i.feed_id"
 
-	countSQL := `SELECT count(*) FROM items i` + where
 	var total int
-	if err := s.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*)`+from+where, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count items: %w", err)
 	}
 
@@ -237,8 +278,7 @@ func (s *Postgres) ListItems(ctx context.Context, q ItemQuery) ([]Item, int, err
 	listSQL := `
 		SELECT i.id, i.feed_id, COALESCE(f.title, ''), i.guid, i.title, i.link,
 		       i.content, i.author, i.published_at, i.fetched_at, i.read
-		FROM items i
-		LEFT JOIN feeds f ON f.id = i.feed_id` + where + `
+		` + from + where + `
 		ORDER BY (i.published_at IS NULL) ASC, i.published_at DESC NULLS LAST, i.fetched_at DESC
 		LIMIT $` + itoa(limitArg) + ` OFFSET $` + itoa(offsetArg)
 
@@ -265,8 +305,11 @@ func (s *Postgres) ListItems(ctx context.Context, q ItemQuery) ([]Item, int, err
 	return out, total, nil
 }
 
-func (s *Postgres) SetItemRead(ctx context.Context, id int64, read bool) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE items SET read = $2 WHERE id = $1`, id, read)
+func (s *Postgres) SetItemRead(ctx context.Context, userID, id int64, read bool) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE items SET read = $3
+		 WHERE id = $1 AND feed_id IN (SELECT id FROM feeds WHERE user_id = $2)`,
+		id, userID, read)
 	if err != nil {
 		return fmt.Errorf("set item read: %w", err)
 	}
@@ -276,34 +319,266 @@ func (s *Postgres) SetItemRead(ctx context.Context, id int64, read bool) error {
 	return nil
 }
 
-func (s *Postgres) SetItemsRead(ctx context.Context, ids []int64, read bool) (int, error) {
+func (s *Postgres) SetItemsRead(ctx context.Context, userID int64, ids []int64, read bool) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
 	ph := placeholders(len(ids))
-	sql := `UPDATE items SET read = $` + itoa(len(ids)+1) + ` WHERE id IN (` + ph + `)`
-	tag, err := s.pool.Exec(ctx, sql, append(toAny(ids), read)...)
+	sql := `UPDATE items SET read = $` + itoa(len(ids)+1) + `
+		 WHERE id IN (` + ph + `)
+		   AND feed_id IN (SELECT id FROM feeds WHERE user_id = $` + itoa(len(ids)+2) + `)`
+	args := append(toAny(ids), read, userID)
+	tag, err := s.pool.Exec(ctx, sql, args...)
 	if err != nil {
 		return 0, fmt.Errorf("set items read: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }
 
-func (s *Postgres) UnreadCount(ctx context.Context) (int, error) {
+func (s *Postgres) UnreadCount(ctx context.Context, userID int64) (int, error) {
 	var n int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM items WHERE read = false`).Scan(&n); err != nil {
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM items i
+		 JOIN feeds f ON f.id = i.feed_id
+		 WHERE f.user_id = $1 AND i.read = false`, userID,
+	).Scan(&n)
+	if err != nil {
 		return 0, fmt.Errorf("unread count: %w", err)
 	}
 	return n, nil
 }
 
+// AssignLegacyData reassigns unclaimed (user_id = 0) feeds and collections to
+// the given user. Rows that would collide with an existing (user_id, url) or
+// (user_id, name) pair are left unclaimed.
+func (s *Postgres) AssignLegacyData(ctx context.Context, userID int64) (int, int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op if committed
+
+	feedTag, err := tx.Exec(ctx,
+		`UPDATE feeds SET user_id = $1
+		 WHERE user_id = 0
+		   AND NOT EXISTS (SELECT 1 FROM feeds f2 WHERE f2.user_id = $1 AND f2.url = feeds.url)`,
+		userID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("assign legacy feeds: %w", err)
+	}
+	collTag, err := tx.Exec(ctx,
+		`UPDATE collections SET user_id = $1
+		 WHERE user_id = 0
+		   AND NOT EXISTS (SELECT 1 FROM collections c2 WHERE c2.user_id = $1 AND c2.name = collections.name)`,
+		userID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("assign legacy collections: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, fmt.Errorf("commit tx: %w", err)
+	}
+	return int(feedTag.RowsAffected()), int(collTag.RowsAffected()), nil
+}
+
+// --- users ---
+
+// userColumns is the SELECT list shared by the user lookups.
+const userColumns = `id, email, display_name, password_hash, role, email_verified, created_at`
+
+// rowScanner is satisfied by both pgx.Row and pgx.Rows.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanUser scans a user row; password_hash may be NULL for OIDC-only users.
+func scanUser(s rowScanner, u *User) error {
+	var hash sql.NullString
+	if err := s.Scan(&u.ID, &u.Email, &u.DisplayName, &hash, &u.Role, &u.EmailVerified, &u.CreatedAt); err != nil {
+		return err
+	}
+	u.PasswordHash = hash.String
+	return nil
+}
+
+func (s *Postgres) CreateUser(ctx context.Context, email, displayName, passwordHash string) (*User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO users (email, display_name, password_hash) VALUES ($1, $2, $3)
+		 RETURNING `+userColumns,
+		email, displayName, passwordHash,
+	).Scan(&u.ID, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.EmailVerified, &u.CreatedAt)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: email already in use", ErrConflict)
+		}
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+	return &u, nil
+}
+
+func (s *Postgres) GetUserByEmail(ctx context.Context, email string) (*User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx,
+		`SELECT `+userColumns+` FROM users WHERE lower(email) = lower($1)`, email,
+	).Scan(&u.ID, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.EmailVerified, &u.CreatedAt)
+	if err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get user by email: %w", err)
+	}
+	return &u, nil
+}
+
+func (s *Postgres) GetUser(ctx context.Context, id int64) (*User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx,
+		`SELECT `+userColumns+` FROM users WHERE id = $1`, id,
+	).Scan(&u.ID, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.EmailVerified, &u.CreatedAt)
+	if err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	return &u, nil
+}
+
+func (s *Postgres) SetUserPasswordHash(ctx context.Context, id int64, passwordHash string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, id, passwordHash)
+	if err != nil {
+		return fmt.Errorf("set user password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ActivateUser marks the user's email as verified. When no other verified
+// user exists, this user becomes the first: it is promoted to admin and all
+// legacy (user_id = 0) data is claimed by it.
+func (s *Postgres) ActivateUser(ctx context.Context, id int64) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op if committed
+
+	var verified int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM users WHERE email_verified = true`).Scan(&verified); err != nil {
+		return false, fmt.Errorf("count verified users: %w", err)
+	}
+	first := verified == 0
+
+	update := `UPDATE users SET email_verified = true WHERE id = $1`
+	if first {
+		update = `UPDATE users SET email_verified = true, role = 'admin' WHERE id = $1`
+	}
+	tag, err := tx.Exec(ctx, update, id)
+	if err != nil {
+		return false, fmt.Errorf("activate user: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, ErrNotFound
+	}
+
+	if first {
+		if _, err := tx.Exec(ctx,
+			`UPDATE feeds SET user_id = $1
+			 WHERE user_id = 0
+			   AND NOT EXISTS (SELECT 1 FROM feeds f2 WHERE f2.user_id = $1 AND f2.url = feeds.url)`,
+			id); err != nil {
+			return false, fmt.Errorf("assign legacy feeds: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE collections SET user_id = $1
+			 WHERE user_id = 0
+			   AND NOT EXISTS (SELECT 1 FROM collections c2 WHERE c2.user_id = $1 AND c2.name = collections.name)`,
+			id); err != nil {
+			return false, fmt.Errorf("assign legacy collections: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit tx: %w", err)
+	}
+	return first, nil
+}
+
+// --- sessions ---
+
+func (s *Postgres) CreateSession(ctx context.Context, tokenHash string, userID int64, expiresAt time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
+		tokenHash, userID, expiresAt)
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	return nil
+}
+
+func (s *Postgres) GetSession(ctx context.Context, tokenHash string) (*Session, error) {
+	var sess Session
+	err := s.pool.QueryRow(ctx,
+		`SELECT token_hash, user_id, created_at, expires_at FROM sessions WHERE token_hash = $1`,
+		tokenHash,
+	).Scan(&sess.TokenHash, &sess.UserID, &sess.CreatedAt, &sess.ExpiresAt)
+	if err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get session: %w", err)
+	}
+	return &sess, nil
+}
+
+func (s *Postgres) DeleteSession(ctx context.Context, tokenHash string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash)
+	if err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+// --- email verification ---
+
+func (s *Postgres) CreateEmailVerification(ctx context.Context, email, tokenHash, purpose string, expiresAt time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO email_verifications (email, token_hash, purpose, expires_at) VALUES ($1, $2, $3, $4)`,
+		email, tokenHash, purpose, expiresAt)
+	if err != nil {
+		return fmt.Errorf("create email verification: %w", err)
+	}
+	return nil
+}
+
+// ConsumeEmailVerification atomically deletes an unexpired verification
+// record; the DELETE ... RETURNING makes reuse impossible.
+func (s *Postgres) ConsumeEmailVerification(ctx context.Context, tokenHash, purpose string) (string, bool, error) {
+	var email string
+	err := s.pool.QueryRow(ctx,
+		`DELETE FROM email_verifications
+		 WHERE token_hash = $1 AND purpose = $2 AND expires_at > now()
+		 RETURNING email`,
+		tokenHash, purpose,
+	).Scan(&email)
+	if err != nil {
+		if rowsAffectedZero(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("consume email verification: %w", err)
+	}
+	return email, true, nil
+}
+
 // --- collections ---
 
-func (s *Postgres) CreateCollection(ctx context.Context, name string) (*Collection, error) {
+func (s *Postgres) CreateCollection(ctx context.Context, userID int64, name string) (*Collection, error) {
 	var c Collection
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO collections (name) VALUES ($1)
-		 RETURNING id, name, created_at`, name,
+		`INSERT INTO collections (user_id, name) VALUES ($1, $2)
+		 RETURNING id, name, created_at`, userID, name,
 	).Scan(&c.ID, &c.Name, &c.CreatedAt)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -314,14 +589,14 @@ func (s *Postgres) CreateCollection(ctx context.Context, name string) (*Collecti
 	return &c, nil
 }
 
-func (s *Postgres) GetCollection(ctx context.Context, id int64) (*Collection, error) {
+func (s *Postgres) GetCollection(ctx context.Context, userID, id int64) (*Collection, error) {
 	var c Collection
 	err := s.pool.QueryRow(ctx,
 		`SELECT c.id, c.name, c.created_at, count(f.feed_id)
 		 FROM collections c
 		 LEFT JOIN feed_collections f ON f.collection_id = c.id
-		 WHERE c.id = $1
-		 GROUP BY c.id, c.name, c.created_at`, id,
+		 WHERE c.id = $1 AND c.user_id = $2
+		 GROUP BY c.id, c.name, c.created_at`, id, userID,
 	).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount)
 	if err != nil {
 		if rowsAffectedZero(err) {
@@ -332,13 +607,14 @@ func (s *Postgres) GetCollection(ctx context.Context, id int64) (*Collection, er
 	return &c, nil
 }
 
-func (s *Postgres) ListCollections(ctx context.Context) ([]Collection, error) {
+func (s *Postgres) ListCollections(ctx context.Context, userID int64) ([]Collection, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT c.id, c.name, c.created_at, count(f.feed_id)
 		 FROM collections c
 		 LEFT JOIN feed_collections f ON f.collection_id = c.id
+		 WHERE c.user_id = $1
 		 GROUP BY c.id, c.name, c.created_at
-		 ORDER BY c.name ASC, c.id ASC`)
+		 ORDER BY c.name ASC, c.id ASC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
 	}
@@ -358,13 +634,13 @@ func (s *Postgres) ListCollections(ctx context.Context) ([]Collection, error) {
 	return out, nil
 }
 
-func (s *Postgres) RenameCollection(ctx context.Context, id int64, name string) (*Collection, error) {
+func (s *Postgres) RenameCollection(ctx context.Context, userID, id int64, name string) (*Collection, error) {
 	var c Collection
 	err := s.pool.QueryRow(ctx,
-		`UPDATE collections AS c SET name = $2 WHERE c.id = $1
+		`UPDATE collections AS c SET name = $3 WHERE c.id = $1 AND c.user_id = $2
 		 RETURNING c.id, c.name, c.created_at,
 		 (SELECT count(fc.feed_id) FROM feed_collections fc WHERE fc.collection_id = c.id)`,
-		id, name,
+		id, userID, name,
 	).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -378,8 +654,8 @@ func (s *Postgres) RenameCollection(ctx context.Context, id int64, name string) 
 	return &c, nil
 }
 
-func (s *Postgres) DeleteCollection(ctx context.Context, id int64) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM collections WHERE id = $1`, id)
+func (s *Postgres) DeleteCollection(ctx context.Context, userID, id int64) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM collections WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
 		return fmt.Errorf("delete collection: %w", err)
 	}
@@ -389,11 +665,12 @@ func (s *Postgres) DeleteCollection(ctx context.Context, id int64) error {
 	return nil
 }
 
-// ErrNotFound is returned when an operation targets a row that does not exist.
+// ErrNotFound is returned when an operation targets a row that does not exist
+// or is not owned by the caller.
 var ErrNotFound = errors.New("not found")
 
 // ErrConflict is returned when a uniqueness constraint would be violated
-// (e.g. creating a collection whose name already exists).
+// (e.g. creating a collection whose name already exists for the user).
 var ErrConflict = errors.New("conflict")
 
 // itoa is a tiny int-to-string helper used to build positional SQL parameters.

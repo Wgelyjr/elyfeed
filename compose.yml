@@ -6,8 +6,8 @@ services:
       POSTGRES_USER: elyfeed
       POSTGRES_PASSWORD: elyfeed
       POSTGRES_DB: elyfeed
-    ports:
-      - "5432:5432"
+    # No host port: the db is only reachable inside the compose network;
+    # the app connects via DATABASE_URL.
     volumes:
       - elyfeed_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -30,6 +30,24 @@ services:
       HOST: 0.0.0.0
       PORT: "8080"
       REFRESH_INTERVAL: 10m
+      # Auth. The defaults make this a local dev deployment: ELYFEED_DEV=true
+      # lets the app start without SMTP/OIDC and prints verification emails
+      # to the log. Real deployments must set SMTP_* (or OIDC_* + BASE_URL)
+      # and ELYFEED_DEV=false. Empty values fall back to the app defaults.
+      ELYFEED_DEV: ${ELYFEED_DEV:-true}
+      BASE_URL: ${BASE_URL:-}
+      SESSION_TTL: ${SESSION_TTL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_IMPLICIT_TLS: ${SMTP_IMPLICIT_TLS:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_SCOPES: ${OIDC_SCOPES:-}
+      FEED_ALLOW_PRIVATE: ${FEED_ALLOW_PRIVATE:-}
     ports:
       # 8080 is the app's internal port. The host port defaults to 8180 because
       # 8080 is often taken on dev machines; override with ELYFEED_PORT.

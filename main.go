@@ -3,17 +3,21 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"elyfeed/internal/auth"
 	"elyfeed/internal/config"
 	"elyfeed/internal/db"
 	"elyfeed/internal/refresh"
+	"elyfeed/internal/rss"
 	"elyfeed/internal/server"
 	"elyfeed/internal/store"
 	"elyfeed/internal/web"
@@ -51,7 +55,10 @@ func run(log *slog.Logger) error {
 	st := store.NewPostgres(pool)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	refresher := refresh.New(st, client, cfg.FeedUserAgent, cfg.RefreshInterval, log)
+	// Feeds are user-supplied URLs, so they use a client with the SSRF guard;
+	// the plain client is reserved for admin-configured endpoints (OIDC).
+	feedClient := rss.NewClient(30*time.Second, cfg.FeedAllowPrivate)
+	refresher := refresh.New(st, feedClient, cfg.FeedUserAgent, cfg.RefreshInterval, log)
 	refresher.Start(ctx)
 
 	assets, err := web.FS()
@@ -59,7 +66,13 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	handler := server.New(st, refresher, assets)
+	authService, err := buildAuthService(ctx, st, client, cfg, log)
+	if err != nil {
+		return err
+	}
+	authService.Start(ctx)
+
+	handler := server.New(st, refresher, assets, authService)
 
 	addr := cfg.Host + ":" + strconv.Itoa(cfg.Port)
 	srv := &http.Server{
@@ -88,4 +101,32 @@ func run(log *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// buildAuthService wires the mailer, the OIDC client (when configured) and
+// the auth service from the loaded configuration.
+func buildAuthService(ctx context.Context, st store.Store, client *http.Client, cfg config.Config, log *slog.Logger) (*auth.Service, error) {
+	var mailer auth.Mailer
+	if cfg.SMTPHost != "" {
+		mailer = auth.NewSMTPMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom, cfg.SMTPImplicitTLS)
+	} else {
+		log.Warn("SMTP_HOST not set; verification emails will be printed to the log")
+		mailer = auth.NewConsoleMailer(log)
+	}
+
+	var oidcClient auth.OIDCClient
+	if cfg.OIDCIssuer != "" {
+		discoverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		redirectURL := cfg.BaseURL + "/api/auth/oidc/callback"
+		var err error
+		oidcClient, err = auth.NewOIDCClient(discoverCtx, client, cfg.OIDCIssuer, cfg.OIDCClientID, cfg.OIDCClientSecret, redirectURL, cfg.OIDCScopes)
+		if err != nil {
+			return nil, fmt.Errorf("configure OIDC: %w", err)
+		}
+		log.Info("OIDC login enabled", "issuer", cfg.OIDCIssuer)
+	}
+
+	cookieSecure := strings.HasPrefix(cfg.BaseURL, "https://")
+	return auth.NewService(st, mailer, oidcClient, log, cfg.BaseURL, cfg.SessionTTL, cookieSecure), nil
 }

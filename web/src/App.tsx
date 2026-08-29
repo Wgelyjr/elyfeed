@@ -6,7 +6,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { api } from './api';
-import type { Item, ItemsResponse } from './types';
+import type { Item, ItemsResponse, User } from './types';
 import Sidebar from './components/Sidebar';
 import ItemList from './components/ItemList';
 
@@ -48,7 +48,12 @@ function applyMarkedRead(
   };
 }
 
-export default function App() {
+interface AppProps {
+  user: User;
+  onLogout: () => void;
+}
+
+export default function App({ user, onLogout }: AppProps) {
   const queryClient = useQueryClient();
   const [selectedFeedId, setSelectedFeedId] = useState<number | null>(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState<
@@ -59,6 +64,18 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(
     () => (typeof window === 'undefined' ? true : window.innerWidth >= 768),
   );
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  // Best-effort server-side logout; the local session ends either way.
+  const handleLogout = async () => {
+    setLoggingOut(true);
+    try {
+      await api.logout();
+    } catch {
+      // The server-side session may already be gone; log out locally.
+    }
+    onLogout();
+  };
 
   const feedsQuery = useQuery({ queryKey: ['feeds'], queryFn: api.listFeeds });
   const collectionsQuery = useQuery({
@@ -300,6 +317,16 @@ export default function App() {
             ))}
           </div>
           <div className="topbar-actions">
+            <span className="user-chip" title={user.email}>
+              {user.display_name || user.email}
+            </span>
+            <button
+              className="btn small"
+              onClick={handleLogout}
+              disabled={loggingOut}
+            >
+              {loggingOut ? '…' : 'Log out'}
+            </button>
             <span className="unread-badge" title="Total unread items">
               {unreadQuery.data ? unreadQuery.data.count : 0} unread
             </span>

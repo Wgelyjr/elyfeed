@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"elyfeed/internal/auth"
 	"elyfeed/internal/refresh"
 	"elyfeed/internal/store"
 )
@@ -26,17 +27,22 @@ func init() {
 	mime.AddExtensionType(".ico", "image/x-icon")
 }
 
-// Server wires the store and refresher behind HTTP handlers.
+// Server wires the store, refresher and auth service behind HTTP handlers.
 type Server struct {
 	store     store.Store
 	refresher *refresh.Refresher
 	assets    fs.FS
+	auth      *auth.Service
 }
 
 // New builds the HTTP handler: the JSON API under /api and the embedded
-// single-page app for every other route.
-func New(st store.Store, ref *refresh.Refresher, assets fs.FS) http.Handler {
-	s := &Server{store: st, refresher: ref, assets: assets}
+// single-page app for every other route. Every request passes through the
+// auth middleware, which populates the request context when a valid session
+// cookie is present, and through the security-headers middleware. /api
+// request bodies are capped at maxRequestBodyBytes and mutating /api
+// requests must carry a JSON content type.
+func New(st store.Store, ref *refresh.Refresher, assets fs.FS, a *auth.Service) http.Handler {
+	s := &Server{store: st, refresher: ref, assets: assets, auth: a}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/feeds", s.handleListFeeds)
@@ -55,16 +61,36 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS) http.Handler {
 	mux.HandleFunc("POST /api/items/bulk-read", s.handleBulkSetItemRead)
 	mux.HandleFunc("GET /api/digest", s.handleDigest)
 	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
+	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/auth/me", s.handleMe)
+	mux.HandleFunc("GET /api/auth/verify", s.handleVerifyEmail)
+	mux.HandleFunc("POST /api/auth/forgot-password", s.handleForgotPassword)
+	mux.HandleFunc("POST /api/auth/reset-password", s.handleResetPassword)
+	mux.HandleFunc("GET /api/auth/oidc", s.handleOIDCLogin)
+	mux.HandleFunc("GET /api/auth/oidc/callback", s.handleOIDCCallback)
 	mux.HandleFunc("GET /api/", s.handleAPIIndex)
 	mux.Handle("GET /", spaHandler{assets: assets})
 
-	return withCORS(mux)
+	return withSecurityHeaders(withAPIPolicy(a.Middleware(mux)))
+}
+
+// currentUser returns the authenticated user's ID for the request, or false
+// when the request carries no authenticated user.
+func (s *Server) currentUser(r *http.Request) (int64, bool) {
+	return auth.UserIDFromContext(r.Context())
 }
 
 // --- feeds ---
 
 func (s *Server) handleListFeeds(w http.ResponseWriter, r *http.Request) {
-	feeds, err := s.store.ListFeeds(r.Context())
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	feeds, err := s.store.ListFeeds(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -76,11 +102,15 @@ func (s *Server) handleListFeeds(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAddFeed(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	var req struct {
 		URL string `json:"url"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	u := strings.TrimSpace(req.URL)
@@ -94,7 +124,7 @@ func (s *Server) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	feed, err := s.refresher.AddFeed(r.Context(), u)
+	feed, err := s.refresher.AddFeed(r.Context(), userID, u)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not add feed: "+err.Error())
 		return
@@ -103,11 +133,20 @@ func (s *Server) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteFeed(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	id, ok := parseID(w, r.PathValue("id"))
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteFeed(r.Context(), id); err != nil {
+	if err := s.store.DeleteFeed(r.Context(), userID, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "feed not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -117,35 +156,43 @@ func (s *Server) handleDeleteFeed(w http.ResponseWriter, r *http.Request) {
 // handleAddFeeds adds several feeds at once (one per URL). Each URL is
 // validated and seeded independently; failures are reported per URL.
 func (s *Server) handleAddFeeds(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	var req struct {
 		URLs []string `json:"urls"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if len(req.URLs) == 0 {
 		writeError(w, http.StatusBadRequest, "urls is required")
 		return
 	}
-	results := s.refresher.AddFeeds(r.Context(), req.URLs)
+	results := s.refresher.AddFeeds(r.Context(), userID, req.URLs)
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
 // handleBulkDeleteFeeds removes several feeds by ID.
 func (s *Server) handleBulkDeleteFeeds(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	var req struct {
 		IDs []int64 `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if len(req.IDs) == 0 {
 		writeError(w, http.StatusBadRequest, "ids is required")
 		return
 	}
-	n, err := s.store.DeleteFeeds(r.Context(), req.IDs)
+	n, err := s.store.DeleteFeeds(r.Context(), userID, req.IDs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -155,6 +202,11 @@ func (s *Server) handleBulkDeleteFeeds(w http.ResponseWriter, r *http.Request) {
 
 // handleSetFeedCollections replaces the collections a feed belongs to.
 func (s *Server) handleSetFeedCollections(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	id, ok := parseID(w, r.PathValue("id"))
 	if !ok {
 		return
@@ -162,11 +214,14 @@ func (s *Server) handleSetFeedCollections(w http.ResponseWriter, r *http.Request
 	var req struct {
 		CollectionIDs []int64 `json:"collection_ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := s.store.SetFeedCollections(r.Context(), id, req.CollectionIDs); err != nil {
+	if err := s.store.SetFeedCollections(r.Context(), userID, id, req.CollectionIDs); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "feed not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -176,7 +231,12 @@ func (s *Server) handleSetFeedCollections(w http.ResponseWriter, r *http.Request
 // --- collections ---
 
 func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
-	collections, err := s.store.ListCollections(r.Context())
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	collections, err := s.store.ListCollections(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -188,11 +248,15 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	name := strings.TrimSpace(req.Name)
@@ -200,7 +264,8 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	collection, err := s.store.CreateCollection(r.Context(), name)
+
+	collection, err := s.store.CreateCollection(r.Context(), userID, name)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, err.Error())
@@ -213,6 +278,11 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleRenameCollection(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	id, ok := parseID(w, r.PathValue("id"))
 	if !ok {
 		return
@@ -220,8 +290,7 @@ func (s *Server) handleRenameCollection(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	name := strings.TrimSpace(req.Name)
@@ -229,7 +298,7 @@ func (s *Server) handleRenameCollection(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	collection, err := s.store.RenameCollection(r.Context(), id, name)
+	collection, err := s.store.RenameCollection(r.Context(), userID, id, name)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrConflict):
@@ -245,11 +314,16 @@ func (s *Server) handleRenameCollection(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	id, ok := parseID(w, r.PathValue("id"))
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteCollection(r.Context(), id); err != nil {
+	if err := s.store.DeleteCollection(r.Context(), userID, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "collection not found")
 			return
@@ -263,6 +337,11 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 // --- items ---
 
 func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	q := store.ItemQuery{}
 
 	if fid := r.URL.Query().Get("feed_id"); fid != "" {
@@ -303,7 +382,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	q.Limit = queryInt(r, "limit", 50, 1, 200)
 	q.Offset = queryInt(r, "offset", 0, 0, 1<<30)
 
-	items, total, err := s.store.ListItems(r.Context(), q)
+	items, total, err := s.store.ListItems(r.Context(), userID, q)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -315,7 +394,12 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUnreadCount(w http.ResponseWriter, r *http.Request) {
-	n, err := s.store.UnreadCount(r.Context())
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	n, err := s.store.UnreadCount(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -324,6 +408,11 @@ func (s *Server) handleUnreadCount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetItemRead(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	id, ok := parseID(w, r.PathValue("id"))
 	if !ok {
 		return
@@ -331,11 +420,14 @@ func (s *Server) handleSetItemRead(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Read bool `json:"read"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := s.store.SetItemRead(r.Context(), id, req.Read); err != nil {
+	if err := s.store.SetItemRead(r.Context(), userID, id, req.Read); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "item not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -343,19 +435,23 @@ func (s *Server) handleSetItemRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBulkSetItemRead(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	var req struct {
 		IDs  []int64 `json:"ids"`
 		Read bool    `json:"read"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if len(req.IDs) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": 0})
 		return
 	}
-	n, err := s.store.SetItemsRead(r.Context(), req.IDs, req.Read)
+	n, err := s.store.SetItemsRead(r.Context(), userID, req.IDs, req.Read)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -368,6 +464,11 @@ func (s *Server) handleBulkSetItemRead(w http.ResponseWriter, r *http.Request) {
 // Query params: collection_id (required), since, until (RFC3339; defaults to
 // the last 24h), format (markdown|json), limit.
 func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 	q := r.URL.Query()
 
 	cid, err := strconv.ParseInt(q.Get("collection_id"), 10, 64)
@@ -375,7 +476,7 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "collection_id must be a positive integer")
 		return
 	}
-	collection, err := s.store.GetCollection(r.Context(), cid)
+	collection, err := s.store.GetCollection(r.Context(), userID, cid)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "collection not found")
@@ -405,7 +506,7 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 		until = *t
 	}
 
-	items, _, err := s.store.ListItems(r.Context(), store.ItemQuery{
+	items, _, err := s.store.ListItems(r.Context(), userID, store.ItemQuery{
 		CollectionID: &cid,
 		Since:        &since,
 		Until:        &until,
@@ -467,6 +568,15 @@ var apiEndpoints = []struct {
 	{"POST", "/api/items/bulk-read", "Set read state for many items, body {\"ids\": [1, 2], \"read\": true}"},
 	{"GET", "/api/digest", "LLM-ready digest of a collection's recent items. Query: collection_id (required), since, until (RFC3339; default: last 24h), format (markdown|json), limit"},
 	{"POST", "/api/refresh", "Refresh all feeds now"},
+	{"POST", "/api/auth/register", "Register an account, body {\"email\": \"...\", \"name\": \"...\", \"password\": \"...\"}; sends a verification email"},
+	{"POST", "/api/auth/login", "Log in, body {\"email\": \"...\", \"password\": \"...\"}; sets the session cookie"},
+	{"POST", "/api/auth/logout", "Log out; clears the session cookie"},
+	{"GET", "/api/auth/me", "The authenticated user (401 when logged out)"},
+	{"GET", "/api/auth/verify", "Consume an email verification link. Query: token"},
+	{"POST", "/api/auth/forgot-password", "Email a password reset link, body {\"email\": \"...\"} (always 200)"},
+	{"POST", "/api/auth/reset-password", "Set a new password, body {\"token\": \"...\", \"password\": \"...\"}"},
+	{"GET", "/api/auth/oidc", "Start the OIDC login flow (302 to the provider)"},
+	{"GET", "/api/auth/oidc/callback", "OIDC redirect target. Query: code, state"},
 }
 
 // handleAPIIndex is the catch-all for GET /api/*. It serves the endpoint
@@ -488,7 +598,7 @@ func (s *Server) handleAPIIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":        "elyfeed",
-		"description": "Single-user RSS reader. Pull recent items by time window (GET /api/items?since=...&until=...) or get a ready-to-use digest per collection (GET /api/digest).",
+		"description": "Multi-user RSS reader. Authenticate with a session (POST /api/auth/login or OIDC), then pull recent items by time window (GET /api/items?since=...&until=...) or get a ready-to-use digest per collection (GET /api/digest).",
 		"endpoints":   endpoints,
 	})
 }
@@ -496,12 +606,158 @@ func (s *Server) handleAPIIndex(w http.ResponseWriter, r *http.Request) {
 // --- refresh ---
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
-	ok, err := s.refresher.RefreshAll(r.Context())
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	refreshed, err := s.refresher.RefreshUser(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"refreshed": ok})
+	writeJSON(w, http.StatusOK, map[string]any{"refreshed": refreshed})
+}
+
+// --- auth ---
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.auth.Register(r.Context(), r, req.Email, req.Name, req.Password); err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"message": "verification email sent"})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	user, token, err := s.auth.Login(r.Context(), r, req.Email, req.Password)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	s.auth.SetSessionCookie(w, token)
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	var token string
+	if c, err := r.Cookie(auth.SessionCookieName); err == nil {
+		token = c.Value
+	}
+	s.auth.Logout(r.Context(), token)
+	s.auth.ClearSessionCookie(w)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	user, err := s.store.GetUser(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
+}
+
+// handleVerifyEmail is the target of the email verification link. It
+// activates the account, starts a session and sends the browser to the app.
+func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
+	_, token, err := s.auth.VerifyEmail(r.Context(), r.URL.Query().Get("token"))
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	s.auth.SetSessionCookie(w, token)
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.auth.ForgotPassword(r.Context(), r, req.Email); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Always report success (even for unknown emails) so the endpoint cannot
+	// be used to enumerate accounts.
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.auth.ResetPassword(r.Context(), req.Token, req.Password); err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
+	authURL, err := s.auth.OIDCAuthURL()
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	_, token, err := s.auth.OIDCCallback(r.Context(), q.Get("code"), q.Get("state"))
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	s.auth.SetSessionCookie(w, token)
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// writeAuthError maps auth service errors to HTTP status codes.
+func writeAuthError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		writeError(w, http.StatusUnauthorized, err.Error())
+	case errors.Is(err, auth.ErrUserNotVerified):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, auth.ErrRateLimited):
+		writeError(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, store.ErrConflict):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, auth.ErrInvalidToken), errors.Is(err, auth.ErrInvalidEmail),
+		errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrOIDCDisabled):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 // renderDigestMarkdown renders items as a markdown digest grouped by feed
@@ -589,17 +845,86 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers ---
 
-func withCORS(next http.Handler) http.Handler {
+// maxRequestBodyBytes caps /api request bodies so a client cannot exhaust
+// memory with an oversized payload.
+const maxRequestBodyBytes = int64(1 << 20) // 1 MB
+
+// contentSecurityPolicy is applied to every response. The built frontend
+// loads only same-origin assets (Vite emits external scripts and
+// stylesheets, no inline scripts); 'unsafe-inline' in style-src covers the
+// style attributes React sets at runtime, and remote image sources are
+// allowed for feed content.
+const contentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: https:; " +
+	"connect-src 'self'; " +
+	"object-src 'none'; " +
+	"base-uri 'self'; " +
+	"frame-ancestors 'none'"
+
+// withSecurityHeaders adds the security headers to every response: a strict
+// Content-Security-Policy, nosniff, and a referrer policy that never leaks
+// the request URL to third parties.
+func withSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// withAPIPolicy hardens /api request bodies: a maxRequestBodyBytes size cap,
+// and a JSON content type on every mutating request (the same-origin SPA
+// always sends one; cross-origin form submissions cannot).
+func withAPIPolicy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if mediaType(r.Header.Get("Content-Type")) != "application/json" {
+				writeError(w, http.StatusUnsupportedMediaType,
+					"mutating requests require Content-Type: application/json")
+				return
+			}
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// mediaType returns the MIME type of a Content-Type header value, or "" when
+// the header is absent or malformed.
+func mediaType(header string) string {
+	if header == "" {
+		return ""
+	}
+	t, _, err := mime.ParseMediaType(header)
+	if err != nil {
+		return ""
+	}
+	return t
+}
+
+// decodeJSON decodes the request body into v, writing an error response and
+// returning false on failure: 413 when the body exceeds maxRequestBodyBytes,
+// 400 for anything else.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		}
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

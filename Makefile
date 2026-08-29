@@ -10,9 +10,10 @@ all: build
 build: build-web
 	go build -o bin/elyfeed .
 
-# Run the server (assumes Postgres is up).
+# Run the server (assumes Postgres is up). ELYFEED_DEV defaults to true so a
+# bare `make run` starts without SMTP/OIDC (verification links go to the log).
 run:
-	DATABASE_URL=$(DB_URL) PORT=$(PORT) go run .
+	ELYFEED_DEV=${ELYFEED_DEV:-true} DATABASE_URL=$(DB_URL) PORT=$(PORT) go run .
 
 # Frontend dev server with HMR + API proxy to :8080.
 dev:
@@ -46,15 +47,17 @@ down:
 logs:
 	podman compose logs -f
 
-# Start only Postgres (for native `make run` dev workflow).
+# Start only Postgres (for native `make run` dev workflow). The compose db is
+# network-internal (no host port), so this runs a standalone dev container
+# bound to localhost:5432 with its own volume.
 db-up:
-	podman compose up -d db
+	podman run -d --name elyfeed-db-dev -e POSTGRES_USER=elyfeed -e POSTGRES_PASSWORD=elyfeed -e POSTGRES_DB=elyfeed -p 127.0.0.1:5432:5432 -v elyfeed_dev_db:/var/lib/postgresql/data postgres:16-alpine
 
 db-down:
-	podman compose down
+	podman rm -f elyfeed-db-dev || true
 
 db-logs:
-	podman compose logs -f db
+	podman logs -f elyfeed-db-dev
 
 # Regenerate PWA icons (requires ImageMagick + a Noto Sans Bold font).
 icons:

@@ -13,11 +13,15 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	neturl "net/url"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -48,8 +52,73 @@ type Item struct {
 	PublishedAt *time.Time
 }
 
+// ErrBlockedAddress is returned when a feed fetch is rejected by the SSRF
+// guard: the URL uses a scheme other than http/https, or the host resolves
+// to a blocked address (loopback, private, link-local, ULA, or multicast).
+var ErrBlockedAddress = errors.New("blocked address")
+
+// NewClient returns an *http.Client for fetching feeds. The transport
+// validates the resolved address of every connection at dial time and
+// refuses to connect to blockedAddr ranges (ErrBlockedAddress), so DNS
+// rebinding and multi-record hosts cannot bypass the check. When
+// allowPrivate is true (FEED_ALLOW_PRIVATE) the address check is skipped.
+func NewClient(timeout time.Duration, allowPrivate bool) *http.Client {
+	dialer := &net.Dialer{
+		Timeout: 30 * time.Second,
+		Control: func(network, address string, _ syscall.RawConn) error {
+			if allowPrivate {
+				return nil
+			}
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				return fmt.Errorf("dial address %q has no IP", address)
+			}
+			if blockedAddr(ip) {
+				return fmt.Errorf("%s: %w", ip, ErrBlockedAddress)
+			}
+			return nil
+		},
+	}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           dialer.DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+}
+
+// blockedAddr reports whether ip is a target the SSRF guard rejects:
+// loopback (127.0.0.0/8, ::1), RFC1918 private (10.0.0.0/8, 172.16.0.0/12,
+// 192.168.0.0/16), ULA (fc00::/7), link-local (169.254.0.0/16, including
+// the cloud metadata address 169.254.169.254, and fe80::/10), or multicast
+// (224.0.0.0/4, ff00::/8).
+func blockedAddr(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast()
+}
+
 // Fetch downloads and parses the feed at url.
 func Fetch(ctx context.Context, client *http.Client, url, userAgent string) (*Feed, error) {
+	u, err := neturl.Parse(url)
+	if err != nil {
+		return nil, fmt.Errorf("parse feed url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("feed url %q: unsupported scheme %q: %w", url, u.Scheme, ErrBlockedAddress)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
