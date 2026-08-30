@@ -547,9 +547,11 @@ func TestAPIIndex(t *testing.T) {
 	}
 	var body struct {
 		Name      string `json:"name"`
+		User      any    `json:"user"`
 		Endpoints []struct {
 			Method string `json:"method"`
 			Path   string `json:"path"`
+			Auth   bool   `json:"auth"`
 		} `json:"endpoints"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -558,9 +560,14 @@ func TestAPIIndex(t *testing.T) {
 	if body.Name != "elyfeed" {
 		t.Fatalf("name = %q", body.Name)
 	}
+	if body.User != nil {
+		t.Errorf("user = %v, want null when logged out", body.User)
+	}
 	found := map[string]bool{}
+	authed := map[string]bool{}
 	for _, e := range body.Endpoints {
 		found[e.Method+" "+e.Path] = true
+		authed[e.Method+" "+e.Path] = e.Auth
 	}
 	for _, want := range []string{
 		"GET /api/digest",
@@ -570,6 +577,41 @@ func TestAPIIndex(t *testing.T) {
 		if !found[want] {
 			t.Errorf("index missing %q", want)
 		}
+	}
+	for ep, wantAuth := range map[string]bool{
+		"GET /api/feeds":          true,
+		"POST /api/refresh":       true,
+		"GET /api/auth/me":        true,
+		"POST /api/auth/login":    false,
+		"POST /api/auth/register": false,
+		"GET /api/auth/oidc":      false,
+		"GET /api/auth/verify":    false,
+		"POST /api/auth/logout":   false,
+	} {
+		if got := authed[ep]; got != wantAuth {
+			t.Errorf("auth flag for %q = %v, want %v", ep, got, wantAuth)
+		}
+	}
+}
+
+func TestAPIIndexUserWhenAuthenticated(t *testing.T) {
+	h, _, _ := newTestServer(t)
+
+	rec := doAuth(t, h, "GET", "/api/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		User *store.User `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.User == nil {
+		t.Fatalf("user is null, want the authenticated user")
+	}
+	if body.User.Email != "admin@example.com" || body.User.DisplayName != "Admin" {
+		t.Errorf("user = %+v, want admin@example.com / Admin", body.User)
 	}
 }
 

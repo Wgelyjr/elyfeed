@@ -550,33 +550,34 @@ var apiEndpoints = []struct {
 	Method      string
 	Path        string
 	Description string
+	Auth        bool
 }{
-	{"GET", "/api", "This index: all available endpoints"},
-	{"GET", "/api/feeds", "List feeds (with collection IDs)"},
-	{"POST", "/api/feeds", "Add a feed (fetches + seeds it), body {\"url\": \"...\"}"},
-	{"POST", "/api/feeds/bulk", "Add many feeds, body {\"urls\": [\"...\", ...]}"},
-	{"POST", "/api/feeds/bulk-delete", "Delete feeds by ID, body {\"ids\": [1, 2]}"},
-	{"PUT", "/api/feeds/{id}/collections", "Set a feed's collections, body {\"collection_ids\": [1]}"},
-	{"DELETE", "/api/feeds/{id}", "Delete a feed and its items"},
-	{"GET", "/api/collections", "List collections (with feed counts)"},
-	{"POST", "/api/collections", "Create a collection, body {\"name\": \"...\"}"},
-	{"PATCH", "/api/collections/{id}", "Rename a collection, body {\"name\": \"...\"}"},
-	{"DELETE", "/api/collections/{id}", "Delete a collection"},
-	{"GET", "/api/items", "List items. Query: feed_id, collection_id, unread (true|false), since, until (RFC3339), limit (1-200), offset"},
-	{"GET", "/api/items/unread-count", "Total unread item count"},
-	{"POST", "/api/items/{id}/read", "Set an item's read state, body {\"read\": true}"},
-	{"POST", "/api/items/bulk-read", "Set read state for many items, body {\"ids\": [1, 2], \"read\": true}"},
-	{"GET", "/api/digest", "LLM-ready digest of a collection's recent items. Query: collection_id (required), since, until (RFC3339; default: last 24h), format (markdown|json), limit"},
-	{"POST", "/api/refresh", "Refresh all feeds now"},
-	{"POST", "/api/auth/register", "Register an account, body {\"email\": \"...\", \"name\": \"...\", \"password\": \"...\"}; sends a verification email"},
-	{"POST", "/api/auth/login", "Log in, body {\"email\": \"...\", \"password\": \"...\"}; sets the session cookie"},
-	{"POST", "/api/auth/logout", "Log out; clears the session cookie"},
-	{"GET", "/api/auth/me", "The authenticated user (401 when logged out)"},
-	{"GET", "/api/auth/verify", "Consume an email verification link. Query: token"},
-	{"POST", "/api/auth/forgot-password", "Email a password reset link, body {\"email\": \"...\"} (always 200)"},
-	{"POST", "/api/auth/reset-password", "Set a new password, body {\"token\": \"...\", \"password\": \"...\"}"},
-	{"GET", "/api/auth/oidc", "Start the OIDC login flow (302 to the provider)"},
-	{"GET", "/api/auth/oidc/callback", "OIDC redirect target. Query: code, state"},
+	{"GET", "/api", "This index: all available endpoints", false},
+	{"GET", "/api/feeds", "List feeds (with collection IDs)", true},
+	{"POST", "/api/feeds", "Add a feed (fetches + seeds it), body {\"url\": \"...\"}", true},
+	{"POST", "/api/feeds/bulk", "Add many feeds, body {\"urls\": [\"...\", ...]}", true},
+	{"POST", "/api/feeds/bulk-delete", "Delete feeds by ID, body {\"ids\": [1, 2]}", true},
+	{"PUT", "/api/feeds/{id}/collections", "Set a feed's collections, body {\"collection_ids\": [1]}", true},
+	{"DELETE", "/api/feeds/{id}", "Delete a feed and its items", true},
+	{"GET", "/api/collections", "List collections (with feed counts)", true},
+	{"POST", "/api/collections", "Create a collection, body {\"name\": \"...\"}", true},
+	{"PATCH", "/api/collections/{id}", "Rename a collection, body {\"name\": \"...\"}", true},
+	{"DELETE", "/api/collections/{id}", "Delete a collection", true},
+	{"GET", "/api/items", "List items. Query: feed_id, collection_id, unread (true|false), since, until (RFC3339), limit (1-200), offset", true},
+	{"GET", "/api/items/unread-count", "Total unread item count", true},
+	{"POST", "/api/items/{id}/read", "Set an item's read state, body {\"read\": true}", true},
+	{"POST", "/api/items/bulk-read", "Set read state for many items, body {\"ids\": [1, 2], \"read\": true}", true},
+	{"GET", "/api/digest", "LLM-ready digest of a collection's recent items. Query: collection_id (required), since, until (RFC3339; default: last 24h), format (markdown|json), limit", true},
+	{"POST", "/api/refresh", "Refresh all feeds now", true},
+	{"POST", "/api/auth/register", "Register an account, body {\"email\": \"...\", \"name\": \"...\", \"password\": \"...\"}; sends a verification email", false},
+	{"POST", "/api/auth/login", "Log in, body {\"email\": \"...\", \"password\": \"...\"}; sets the session cookie", false},
+	{"POST", "/api/auth/logout", "Log out; clears the session cookie", false},
+	{"GET", "/api/auth/me", "The authenticated user (401 when logged out)", true},
+	{"GET", "/api/auth/verify", "Consume an email verification link. Query: token", false},
+	{"POST", "/api/auth/forgot-password", "Email a password reset link, body {\"email\": \"...\"} (always 200)", false},
+	{"POST", "/api/auth/reset-password", "Set a new password, body {\"token\": \"...\", \"password\": \"...\"}", false},
+	{"GET", "/api/auth/oidc", "Start the OIDC login flow (302 to the provider)", false},
+	{"GET", "/api/auth/oidc/callback", "OIDC redirect target. Query: code, state", false},
 }
 
 // handleAPIIndex is the catch-all for GET /api/*. It serves the endpoint
@@ -588,17 +589,30 @@ func (s *Server) handleAPIIndex(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	endpoints := make([]map[string]string, 0, len(apiEndpoints))
+	endpoints := make([]struct {
+		Method      string `json:"method"`
+		Path        string `json:"path"`
+		Description string `json:"description"`
+		Auth        bool   `json:"auth"`
+	}, 0, len(apiEndpoints))
 	for _, e := range apiEndpoints {
-		endpoints = append(endpoints, map[string]string{
-			"method":      e.Method,
-			"path":        e.Path,
-			"description": e.Description,
-		})
+		endpoints = append(endpoints, struct {
+			Method      string `json:"method"`
+			Path        string `json:"path"`
+			Description string `json:"description"`
+			Auth        bool   `json:"auth"`
+		}{e.Method, e.Path, e.Description, e.Auth})
+	}
+	var user any
+	if userID, ok := s.currentUser(r); ok {
+		if u, err := s.store.GetUser(r.Context(), userID); err == nil {
+			user = u
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":        "elyfeed",
 		"description": "Multi-user RSS reader. Authenticate with a session (POST /api/auth/login or OIDC), then pull recent items by time window (GET /api/items?since=...&until=...) or get a ready-to-use digest per collection (GET /api/digest).",
+		"user":        user,
 		"endpoints":   endpoints,
 	})
 }

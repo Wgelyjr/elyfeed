@@ -173,6 +173,9 @@ PORT=9000 REFRESH_INTERVAL=5m DATABASE_URL="postgres://user:pass@localhost:5432/
 
 `GET /api` (or `GET /api/`) returns a JSON index of all endpoints — the API is
 self-describing, which makes it easy for LLMs and other automation to discover.
+Each endpoint carries an `auth` flag (`true` when a session is required), and
+the index includes the current user under `user` when the request is
+authenticated (`null` otherwise).
 
 All data endpoints require a session (the `elyfeed_session` cookie set by
 login). Auth endpoints are public. Mutating endpoints require
