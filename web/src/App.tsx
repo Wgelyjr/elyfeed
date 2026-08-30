@@ -240,6 +240,18 @@ export default function App({ user, onLogout }: AppProps) {
     refetchInterval: 30_000,
   });
 
+  // Community directory of public collections (one-click import).
+  const publicCollectionsQuery = useQuery({
+    queryKey: ['public-collections'],
+    queryFn: api.listPublicCollections,
+  });
+  const pendingCollectionSharesQuery = useQuery({
+    queryKey: ['pending-collection-shares'],
+    queryFn: api.listPendingCollectionShares,
+    enabled: isAdmin,
+    refetchInterval: 30_000,
+  });
+
   const requestShare = useMutation({
     mutationFn: (id: number) => api.requestShare(id),
     onSuccess: invalidateAll,
@@ -263,6 +275,37 @@ export default function App({ user, onLogout }: AppProps) {
       queryClient.invalidateQueries({ queryKey: ['shared-feeds'] });
       queryClient.invalidateQueries({ queryKey: ['pending-shares'] });
     },
+  });
+
+  // Public/private collection visibility (admin review) + import by id.
+  const invalidateCollectionVisibility = () => {
+    queryClient.invalidateQueries({ queryKey: ['collections'] });
+    queryClient.invalidateQueries({ queryKey: ['pending-collection-shares'] });
+  };
+  const requestCollectionPublic = useMutation({
+    mutationFn: (id: number) => api.requestCollectionPublic(id),
+    onSuccess: invalidateCollectionVisibility,
+  });
+  const requestCollectionPrivate = useMutation({
+    mutationFn: (id: number) => api.requestCollectionPrivate(id),
+    onSuccess: invalidateCollectionVisibility,
+  });
+  const importCollectionById = useMutation({
+    mutationFn: (id: number) => api.importCollectionByID(id),
+    onSuccess: invalidateAll,
+  });
+  const invalidateCollectionModeration = () => {
+    queryClient.invalidateQueries({ queryKey: ['collections'] });
+    queryClient.invalidateQueries({ queryKey: ['public-collections'] });
+    queryClient.invalidateQueries({ queryKey: ['pending-collection-shares'] });
+  };
+  const approveCollectionShare = useMutation({
+    mutationFn: (id: number) => api.approveCollectionShare(id),
+    onSuccess: invalidateCollectionModeration,
+  });
+  const rejectCollectionShare = useMutation({
+    mutationFn: (id: number) => api.rejectCollectionShare(id),
+    onSuccess: invalidateCollectionModeration,
   });
 
   // The collection whose share link was just generated (for the "copied" hint).
@@ -373,6 +416,21 @@ export default function App({ user, onLogout }: AppProps) {
         sharePending={requestShare.isPending || requestUnshare.isPending}
         onCreateCollectionShare={(id) => createCollectionShare.mutate(id)}
         collectionShare={collectionShare}
+        publicCollections={publicCollectionsQuery.data ?? []}
+        onImportCollection={(id) => importCollectionById.mutate(id)}
+        importCollectionPending={importCollectionById.isPending}
+        onRequestCollectionPublic={(id) => requestCollectionPublic.mutate(id)}
+        onRequestCollectionPrivate={(id) => requestCollectionPrivate.mutate(id)}
+        collectionVisibilityPending={
+          requestCollectionPublic.isPending ||
+          requestCollectionPrivate.isPending
+        }
+        pendingCollectionShares={pendingCollectionSharesQuery.data ?? []}
+        onApproveCollectionShare={(id) => approveCollectionShare.mutate(id)}
+        onRejectCollectionShare={(id) => rejectCollectionShare.mutate(id)}
+        collectionModerationPending={
+          approveCollectionShare.isPending || rejectCollectionShare.isPending
+        }
       />
 
       <main className="main">

@@ -59,6 +59,13 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS, a *auth.Service) 
 	mux.HandleFunc("POST /api/collections/{id}/share", s.handleCreateCollectionShare)
 	mux.HandleFunc("GET /api/collection-shares/{token}", s.handleGetCollectionShare)
 	mux.HandleFunc("POST /api/imports", s.handleImport)
+	mux.HandleFunc("POST /api/collections/{id}/make-public", s.handleRequestCollectionPublic)
+	mux.HandleFunc("POST /api/collections/{id}/make-private", s.handleRequestCollectionPrivate)
+	mux.HandleFunc("POST /api/collections/{id}/import", s.handleImportCollection)
+	mux.HandleFunc("GET /api/public-collections", s.handleListPublicCollections)
+	mux.HandleFunc("GET /api/public-collections/pending", s.handleListPendingCollectionShares)
+	mux.HandleFunc("POST /api/public-collections/{id}/approve", s.handleApproveCollectionShare)
+	mux.HandleFunc("POST /api/public-collections/{id}/reject", s.handleRejectCollectionShare)
 	mux.HandleFunc("POST /api/feeds/{id}/share", s.handleRequestShare)
 	mux.HandleFunc("POST /api/feeds/{id}/unshare", s.handleRequestUnshare)
 	mux.HandleFunc("GET /api/shared-feeds", s.handleListSharedFeeds)
@@ -575,6 +582,56 @@ func (s *Server) handleGetCollectionShare(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, cs)
 }
 
+// importFeedsIntoNewCollection creates a (collision-free) collection for the
+// user named name, adds the given feed URLs to the account, links the added
+// feeds to the new collection, and returns the collection plus per-URL results.
+func (s *Server) importFeedsIntoNewCollection(ctx context.Context, userID int64, name string, urls []string) (*store.Collection, []refresh.AddFeedResult, error) {
+	collection, err := s.store.CreateCollection(ctx, userID, s.uniqueCollectionName(ctx, userID, name))
+	if err != nil {
+		return nil, nil, err
+	}
+	results := s.refresher.AddFeeds(ctx, userID, urls)
+	addedIDs := make([]int64, 0, len(results))
+	for _, res := range results {
+		if res.Feed != nil {
+			addedIDs = append(addedIDs, res.Feed.ID)
+		}
+	}
+	if len(addedIDs) > 0 {
+		if _, err := s.store.AddFeedsToCollection(ctx, userID, collection.ID, addedIDs); err != nil {
+			return nil, nil, err
+		}
+	}
+	return collection, results, nil
+}
+
+// feedURLsFromShare collects the non-blank feed URLs from a shared collection.
+func feedURLsFromShare(cs *store.CollectionShare) []string {
+	urls := make([]string, 0, len(cs.Feeds))
+	for _, f := range cs.Feeds {
+		if u := strings.TrimSpace(f.URL); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	return urls
+}
+
+// writeImportResult serializes the standard import response.
+func writeImportResult(w http.ResponseWriter, collection *store.Collection, urls []string, results []refresh.AddFeedResult) {
+	added := 0
+	for _, res := range results {
+		if res.Feed != nil {
+			added++
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"collection": collection,
+		"added":      added,
+		"total":      len(urls),
+		"results":    results,
+	})
+}
+
 // handleImport imports a shared collection: it creates a (collision-free)
 // collection for the user, adds the shared feeds to the account, and links them
 // to the new collection.
@@ -613,9 +670,9 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "Imported"
 	}
-	name = s.uniqueCollectionName(r.Context(), userID, name)
+	urls := feedURLsFromShare(cs)
 
-	collection, err := s.store.CreateCollection(r.Context(), userID, name)
+	collection, results, err := s.importFeedsIntoNewCollection(r.Context(), userID, name, urls)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, err.Error())
@@ -624,32 +681,140 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	writeImportResult(w, collection, urls, results)
+}
 
-	urls := make([]string, 0, len(cs.Feeds))
-	for _, f := range cs.Feeds {
-		if u := strings.TrimSpace(f.URL); u != "" {
-			urls = append(urls, u)
-		}
+// handleImportCollection imports a public collection by ID: it creates a
+// (collision-free) collection for the user and adds all of the source
+// collection's feeds to the account.
+func (s *Server) handleImportCollection(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
 	}
-	results := s.refresher.AddFeeds(r.Context(), userID, urls)
-	addedIDs := make([]int64, 0, len(results))
-	for _, res := range results {
-		if res.Feed != nil {
-			addedIDs = append(addedIDs, res.Feed.ID)
-		}
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
 	}
-	if len(addedIDs) > 0 {
-		if _, err := s.store.AddFeedsToCollection(r.Context(), userID, collection.ID, addedIDs); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+	cs, err := s.store.GetPublicCollectionForImport(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "collection not found or not public")
 			return
 		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"collection": collection,
-		"added":      len(addedIDs),
-		"total":      len(urls),
-		"results":    results,
-	})
+	urls := feedURLsFromShare(cs)
+	collection, results, err := s.importFeedsIntoNewCollection(r.Context(), userID, cs.Name, urls)
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeImportResult(w, collection, urls, results)
+}
+
+// --- public collections (admin-approved visibility) ---
+
+// handleRequestCollectionPublic marks the user's private collection as
+// pending-publish.
+func (s *Server) handleRequestCollectionPublic(w http.ResponseWriter, r *http.Request) {
+	s.setCollectionVisibilityRequest(w, r, "public")
+}
+
+// handleRequestCollectionPrivate marks the user's public collection as
+// pending-unpublish.
+func (s *Server) handleRequestCollectionPrivate(w http.ResponseWriter, r *http.Request) {
+	s.setCollectionVisibilityRequest(w, r, "private")
+}
+
+func (s *Server) setCollectionVisibilityRequest(w http.ResponseWriter, r *http.Request, want string) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	collection, err := s.store.SetCollectionVisibilityRequest(r.Context(), userID, id, want)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "collection not found")
+			return
+		}
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, collection)
+}
+
+// handleListPublicCollections is the community directory of public collections.
+func (s *Server) handleListPublicCollections(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.currentUser(r); !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	cols, err := s.store.ListPublicCollections(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if cols == nil {
+		cols = []store.PublicCollection{}
+	}
+	writeJSON(w, http.StatusOK, cols)
+}
+
+// handleListPendingCollectionShares returns the admin queue of pending
+// collection-visibility changes.
+func (s *Server) handleListPendingCollectionShares(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	reqs, err := s.store.ListPendingCollectionShares(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if reqs == nil {
+		reqs = []store.CollectionShareRequest{}
+	}
+	writeJSON(w, http.StatusOK, reqs)
+}
+
+func (s *Server) handleApproveCollectionShare(w http.ResponseWriter, r *http.Request) {
+	s.resolveCollectionShare(w, r, true)
+}
+
+func (s *Server) handleRejectCollectionShare(w http.ResponseWriter, r *http.Request) {
+	s.resolveCollectionShare(w, r, false)
+}
+
+func (s *Server) resolveCollectionShare(w http.ResponseWriter, r *http.Request, approve bool) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	collection, err := s.store.ResolveCollectionShare(r.Context(), id, approve)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no pending change for this collection")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, collection)
 }
 
 // uniqueCollectionName returns name if it is free for the user, otherwise a
@@ -906,6 +1071,13 @@ var apiEndpoints = []struct {
 	{"POST", "/api/collections/{id}/share", "Create or regenerate a collection's share token; returns {\"token\": \"...\"}", true},
 	{"GET", "/api/collection-shares/{token}", "Preview a share token: the collection's name and feed URLs", true},
 	{"POST", "/api/imports", "Import a shared collection, body {\"token\": \"...\", \"name\": \"...\" (optional)}", true},
+	{"POST", "/api/collections/{id}/make-public", "Request to make a collection public (moves it to pending admin review)", true},
+	{"POST", "/api/collections/{id}/make-private", "Request to make a collection private (moves it to pending admin review)", true},
+	{"POST", "/api/collections/{id}/import", "Import a public collection by ID (creates a new collection with its feeds)", true},
+	{"GET", "/api/public-collections", "Community directory of public collections (with their feed URLs)", true},
+	{"GET", "/api/public-collections/pending", "Pending collection visibility changes awaiting admin review", true},
+	{"POST", "/api/public-collections/{id}/approve", "Approve a pending collection visibility change", true},
+	{"POST", "/api/public-collections/{id}/reject", "Reject a pending collection visibility change", true},
 	{"POST", "/api/feeds/{id}/share", "Request to publish a feed (moves it to pending admin review)", true},
 	{"POST", "/api/feeds/{id}/unshare", "Request to unpublish a feed (moves it to pending admin review)", true},
 	{"GET", "/api/shared-feeds", "Community directory of shared feeds", true},

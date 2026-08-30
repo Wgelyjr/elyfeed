@@ -2,10 +2,12 @@ import type {
   AddFeedResult,
   Collection,
   CollectionShare,
+  CollectionShareRequest,
   Feed,
   ImportResult,
   Item,
   ItemsResponse,
+  PublicCollection,
   RecommendedFeed,
   ShareRequest,
   SharedFeed,
@@ -169,6 +171,28 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ token, name }),
     }),
+
+  // Public/private collections (admin-approved visibility).
+  requestCollectionPublic: (id: number): Promise<Collection> =>
+    request<Collection>(`/api/collections/${id}/make-public`, { method: 'POST' }),
+
+  requestCollectionPrivate: (id: number): Promise<Collection> =>
+    request<Collection>(`/api/collections/${id}/make-private`, { method: 'POST' }),
+
+  importCollectionByID: (id: number): Promise<ImportResult> =>
+    request<ImportResult>(`/api/collections/${id}/import`, { method: 'POST' }),
+
+  listPublicCollections: (): Promise<PublicCollection[]> =>
+    request<PublicCollection[]>('/api/public-collections'),
+
+  listPendingCollectionShares: (): Promise<CollectionShareRequest[]> =>
+    request<CollectionShareRequest[]>('/api/public-collections/pending'),
+
+  approveCollectionShare: (id: number): Promise<Collection> =>
+    request<Collection>(`/api/public-collections/${id}/approve`, { method: 'POST' }),
+
+  rejectCollectionShare: (id: number): Promise<Collection> =>
+    request<Collection>(`/api/public-collections/${id}/reject`, { method: 'POST' }),
 
   listItems: (params: ListItemsParams): Promise<ItemsResponse> => {
     const qs = new URLSearchParams();

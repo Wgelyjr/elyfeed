@@ -44,6 +44,15 @@ func scanFeed(s rowScanner, f *Feed) error {
 	return nil
 }
 
+// nullableString converts a scanned NULL-able string column to a pointer (nil
+// when NULL).
+func nullableString(nsql sql.NullString) *string {
+	if nsql.Valid {
+		return &nsql.String
+	}
+	return nil
+}
+
 func (s *Postgres) CreateFeed(ctx context.Context, userID int64, url, title, siteURL string) (*Feed, error) {
 	row := s.pool.QueryRow(ctx,
 		`INSERT INTO feeds (user_id, url, title, site_url) VALUES ($1, $2, $3, $4)
@@ -738,44 +747,48 @@ func (s *Postgres) ConsumeEmailVerification(ctx context.Context, tokenHash, purp
 
 func (s *Postgres) CreateCollection(ctx context.Context, userID int64, name string) (*Collection, error) {
 	var c Collection
+	var req sql.NullString
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO collections (user_id, name) VALUES ($1, $2)
-		 RETURNING id, name, created_at`, userID, name,
-	).Scan(&c.ID, &c.Name, &c.CreatedAt)
+		 RETURNING id, name, created_at, visibility_status, visibility_requested`, userID, name,
+	).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.VisibilityStatus, &req)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, fmt.Errorf("%w: %q already exists", ErrConflict, name)
 		}
 		return nil, fmt.Errorf("create collection: %w", err)
 	}
+	c.VisibilityRequested = nullableString(req)
 	return &c, nil
 }
 
 func (s *Postgres) GetCollection(ctx context.Context, userID, id int64) (*Collection, error) {
 	var c Collection
+	var req sql.NullString
 	err := s.pool.QueryRow(ctx,
-		`SELECT c.id, c.name, c.created_at, count(f.feed_id)
+		`SELECT c.id, c.name, c.created_at, count(f.feed_id), c.visibility_status, c.visibility_requested
 		 FROM collections c
 		 LEFT JOIN feed_collections f ON f.collection_id = c.id
 		 WHERE c.id = $1 AND c.user_id = $2
-		 GROUP BY c.id, c.name, c.created_at`, id, userID,
-	).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount)
+		 GROUP BY c.id, c.name, c.created_at, c.visibility_status, c.visibility_requested`, id, userID,
+	).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount, &c.VisibilityStatus, &req)
 	if err != nil {
 		if rowsAffectedZero(err) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("get collection: %w", err)
 	}
+	c.VisibilityRequested = nullableString(req)
 	return &c, nil
 }
 
 func (s *Postgres) ListCollections(ctx context.Context, userID int64) ([]Collection, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT c.id, c.name, c.created_at, count(f.feed_id)
+		`SELECT c.id, c.name, c.created_at, count(f.feed_id), c.visibility_status, c.visibility_requested
 		 FROM collections c
 		 LEFT JOIN feed_collections f ON f.collection_id = c.id
 		 WHERE c.user_id = $1
-		 GROUP BY c.id, c.name, c.created_at
+		 GROUP BY c.id, c.name, c.created_at, c.visibility_status, c.visibility_requested
 		 ORDER BY c.name ASC, c.id ASC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
@@ -785,9 +798,11 @@ func (s *Postgres) ListCollections(ctx context.Context, userID int64) ([]Collect
 	out := make([]Collection, 0)
 	for rows.Next() {
 		var c Collection
-		if err := rows.Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount); err != nil {
+		var req sql.NullString
+		if err := rows.Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount, &c.VisibilityStatus, &req); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
 		}
+		c.VisibilityRequested = nullableString(req)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -798,12 +813,14 @@ func (s *Postgres) ListCollections(ctx context.Context, userID int64) ([]Collect
 
 func (s *Postgres) RenameCollection(ctx context.Context, userID, id int64, name string) (*Collection, error) {
 	var c Collection
+	var req sql.NullString
 	err := s.pool.QueryRow(ctx,
 		`UPDATE collections AS c SET name = $3 WHERE c.id = $1 AND c.user_id = $2
 		 RETURNING c.id, c.name, c.created_at,
-		 (SELECT count(fc.feed_id) FROM feed_collections fc WHERE fc.collection_id = c.id)`,
+		 (SELECT count(fc.feed_id) FROM feed_collections fc WHERE fc.collection_id = c.id),
+		 c.visibility_status, c.visibility_requested`,
 		id, userID, name,
-	).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount)
+	).Scan(&c.ID, &c.Name, &c.CreatedAt, &c.FeedCount, &c.VisibilityStatus, &req)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, fmt.Errorf("%w: %q already exists", ErrConflict, name)
@@ -813,6 +830,7 @@ func (s *Postgres) RenameCollection(ctx context.Context, userID, id int64, name 
 		}
 		return nil, fmt.Errorf("rename collection: %w", err)
 	}
+	c.VisibilityRequested = nullableString(req)
 	return &c, nil
 }
 
@@ -886,6 +904,199 @@ func (s *Postgres) GetCollectionShare(ctx context.Context, token string) (*Colle
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate shared feeds: %w", err)
+	}
+	cs.Feeds = feeds
+	return &cs, nil
+}
+
+// --- collection visibility (public/private with admin approval) ---
+
+// SetCollectionVisibilityRequest moves a collection to pending with the given
+// target ("public" from a private collection, "private" from a public one).
+func (s *Postgres) SetCollectionVisibilityRequest(ctx context.Context, userID, collectionID int64, want string) (*Collection, error) {
+	var from, to string
+	switch want {
+	case "public":
+		from, to = "private", "public"
+	case "private":
+		from, to = "public", "private"
+	default:
+		return nil, fmt.Errorf("invalid visibility target %q", want)
+	}
+
+	row := s.pool.QueryRow(ctx,
+		`UPDATE collections
+		 SET visibility_status = 'pending', visibility_requested = $4
+		 WHERE id = $1 AND user_id = $2 AND visibility_status = $3
+		 RETURNING id, name, created_at, visibility_status, visibility_requested`,
+		collectionID, userID, from, to,
+	)
+	var c Collection
+	var req sql.NullString
+	if err := row.Scan(&c.ID, &c.Name, &c.CreatedAt, &c.VisibilityStatus, &req); err != nil {
+		if rowsAffectedZero(err) {
+			// Distinguish "not owned" from "already in another state".
+			var cur string
+			if err := s.pool.QueryRow(ctx,
+				`SELECT visibility_status FROM collections WHERE id = $1 AND user_id = $2`, collectionID, userID,
+			).Scan(&cur); err != nil {
+				if rowsAffectedZero(err) {
+					return nil, ErrNotFound
+				}
+				return nil, fmt.Errorf("get visibility state: %w", err)
+			}
+			return nil, fmt.Errorf("collection is currently %s", cur)
+		}
+		return nil, fmt.Errorf("set collection visibility request: %w", err)
+	}
+	c.VisibilityRequested = nullableString(req)
+	return &c, nil
+}
+
+// ListPendingCollectionShares returns every collection whose visibility change
+// awaits review.
+func (s *Postgres) ListPendingCollectionShares(ctx context.Context) ([]CollectionShareRequest, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT c.id, c.name, c.visibility_requested, u.id, u.display_name, u.email
+		 FROM collections c JOIN users u ON u.id = c.user_id
+		 WHERE c.visibility_status = 'pending'
+		 ORDER BY c.name ASC, c.id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list pending collection shares: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]CollectionShareRequest, 0)
+	for rows.Next() {
+		var r CollectionShareRequest
+		if err := rows.Scan(&r.CollectionID, &r.Name, &r.Requested, &r.OwnerID, &r.OwnerName, &r.OwnerEmail); err != nil {
+			return nil, fmt.Errorf("scan pending collection share: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending collection shares: %w", err)
+	}
+	return out, nil
+}
+
+// ResolveCollectionShare applies (approve) or reverts (reject) a pending
+// collection-visibility change.
+func (s *Postgres) ResolveCollectionShare(ctx context.Context, collectionID int64, approve bool) (*Collection, error) {
+	set := `SET visibility_status = visibility_requested, visibility_requested = NULL`
+	if !approve {
+		set = `SET visibility_status = CASE visibility_requested WHEN 'public' THEN 'private' ELSE 'public' END,
+		       visibility_requested = NULL`
+	}
+	row := s.pool.QueryRow(ctx,
+		`UPDATE collections `+set+`
+		 WHERE id = $1 AND visibility_status = 'pending' AND visibility_requested IS NOT NULL
+		 RETURNING id, name, created_at, visibility_status, visibility_requested`,
+		collectionID,
+	)
+	var c Collection
+	var req sql.NullString
+	if err := row.Scan(&c.ID, &c.Name, &c.CreatedAt, &c.VisibilityStatus, &req); err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("resolve collection share: %w", err)
+	}
+	c.VisibilityRequested = nullableString(req)
+	return &c, nil
+}
+
+// ListPublicCollections returns the community directory of public collections,
+// each with the feed URLs it holds.
+func (s *Postgres) ListPublicCollections(ctx context.Context) ([]PublicCollection, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT c.id, c.name, u.display_name, count(fc.feed_id)
+		 FROM collections c
+		 JOIN users u ON u.id = c.user_id
+		 LEFT JOIN feed_collections fc ON fc.collection_id = c.id
+		 WHERE c.visibility_status = 'public'
+		 GROUP BY c.id, c.name, u.display_name
+		 ORDER BY c.name ASC, c.id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list public collections: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]PublicCollection, 0)
+	for rows.Next() {
+		var pc PublicCollection
+		if err := rows.Scan(&pc.ID, &pc.Name, &pc.OwnerName, &pc.FeedCount); err != nil {
+			return nil, fmt.Errorf("scan public collection: %w", err)
+		}
+		out = append(out, pc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate public collections: %w", err)
+	}
+
+	// Attach each collection's feed URLs for the directory preview + import.
+	for i := range out {
+		frows, err := s.pool.Query(ctx,
+			`SELECT f.url, f.title
+			 FROM feed_collections fc JOIN feeds f ON f.id = fc.feed_id
+			 WHERE fc.collection_id = $1
+			 ORDER BY f.title ASC, f.id ASC`, out[i].ID)
+		if err != nil {
+			return nil, fmt.Errorf("list public collection feeds: %w", err)
+		}
+		feeds := make([]SharedFeedURL, 0)
+		for frows.Next() {
+			var u SharedFeedURL
+			if err := frows.Scan(&u.URL, &u.Title); err != nil {
+				frows.Close()
+				return nil, fmt.Errorf("scan public collection feed: %w", err)
+			}
+			feeds = append(feeds, u)
+		}
+		frows.Close()
+		if err := frows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate public collection feeds: %w", err)
+		}
+		out[i].Feeds = feeds
+	}
+	return out, nil
+}
+
+// GetPublicCollectionForImport resolves a public collection (by ID) to its name
+// and feed URLs so another user can import it.
+func (s *Postgres) GetPublicCollectionForImport(ctx context.Context, collectionID int64) (*CollectionShare, error) {
+	var cs CollectionShare
+	if err := s.pool.QueryRow(ctx,
+		`SELECT c.name FROM collections c
+		 WHERE c.id = $1 AND c.visibility_status = 'public'`,
+		collectionID,
+	).Scan(&cs.Name); err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get public collection: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT f.url, f.title
+		 FROM feed_collections fc JOIN feeds f ON f.id = fc.feed_id
+		 WHERE fc.collection_id = $1
+		 ORDER BY f.title ASC, f.id ASC`, collectionID)
+	if err != nil {
+		return nil, fmt.Errorf("list public collection feeds: %w", err)
+	}
+	defer rows.Close()
+
+	feeds := make([]SharedFeedURL, 0)
+	for rows.Next() {
+		var u SharedFeedURL
+		if err := rows.Scan(&u.URL, &u.Title); err != nil {
+			return nil, fmt.Errorf("scan public collection feed: %w", err)
+		}
+		feeds = append(feeds, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate public collection feeds: %w", err)
 	}
 	cs.Feeds = feeds
 	return &cs, nil

@@ -2,6 +2,8 @@
 
 export type ShareStatus = 'private' | 'pending' | 'shared';
 
+export type VisibilityStatus = 'private' | 'pending' | 'public';
+
 export interface Feed {
   id: number;
   url: string;
@@ -15,18 +17,19 @@ export interface Feed {
 }
 
 export interface SharedFeed {
-  id: number;
-  title: string;
   url: string;
+  title: string;
   site_url: string;
+  owner_name: string;
 }
 
 export interface ShareRequest {
-  id: number;
+  feed_id: number;
   title: string;
   url: string;
-  share_requested: 'shared' | 'private';
-  user_email: string;
+  owner_name: string;
+  owner_email: string;
+  requested: 'shared' | 'private';
 }
 
 export interface RecommendedFeed {
@@ -37,10 +40,8 @@ export interface RecommendedFeed {
 }
 
 export interface SharedFeedURL {
-  id: number;
   url: string;
   title: string;
-  site_url: string;
 }
 
 export interface CollectionShare {
@@ -61,6 +62,25 @@ export interface Collection {
   name: string;
   feed_count: number;
   created_at: string;
+  visibility_status: VisibilityStatus;
+  visibility_requested: 'private' | 'public' | null;
+}
+
+export interface PublicCollection {
+  id: number;
+  name: string;
+  owner_name: string;
+  feed_count: number;
+  feeds: SharedFeedURL[];
+}
+
+export interface CollectionShareRequest {
+  collection_id: number;
+  owner_id: number;
+  owner_name: string;
+  owner_email: string;
+  requested: 'private' | 'public';
+  name: string;
 }
 
 export interface AddFeedResult {

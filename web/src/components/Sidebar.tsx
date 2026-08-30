@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import type {
   Collection,
+  CollectionShareRequest,
   Feed,
+  PublicCollection,
   ShareRequest,
   SharedFeed,
 } from '../types';
@@ -39,6 +41,18 @@ interface Props {
   sharePending: boolean;
   onCreateCollectionShare: (id: number) => void;
   collectionShare: { id: number; link: string } | null;
+  // Public/private collection visibility + community directory
+  publicCollections: PublicCollection[];
+  onImportCollection: (id: number) => void;
+  importCollectionPending: boolean;
+  onRequestCollectionPublic: (id: number) => void;
+  onRequestCollectionPrivate: (id: number) => void;
+  collectionVisibilityPending: boolean;
+  // Admin queue for pending collection-visibility changes
+  pendingCollectionShares: CollectionShareRequest[];
+  onApproveCollectionShare: (id: number) => void;
+  onRejectCollectionShare: (id: number) => void;
+  collectionModerationPending: boolean;
 }
 
 export default function Sidebar({
@@ -73,6 +87,16 @@ export default function Sidebar({
   sharePending,
   onCreateCollectionShare,
   collectionShare,
+  publicCollections,
+  onImportCollection,
+  importCollectionPending,
+  onRequestCollectionPublic,
+  onRequestCollectionPrivate,
+  collectionVisibilityPending,
+  pendingCollectionShares,
+  onApproveCollectionShare,
+  onRejectCollectionShare,
+  collectionModerationPending,
 }: Props) {
   const [url, setUrl] = useState('');
   const [bulkAddOpen, setBulkAddOpen] = useState(false);
@@ -197,6 +221,42 @@ export default function Sidebar({
           title: 'Click to share with the community (needs admin approval)',
           disabled: false,
           onClick: () => onRequestShare(f.id),
+        };
+    }
+  }
+
+  // Describes the visibility pill for one of the user's collections.
+  function collectionVisibilityMeta(c: Collection): {
+    label: string;
+    title: string;
+    disabled: boolean;
+    onClick: () => void;
+  } {
+    switch (c.visibility_status) {
+      case 'public':
+        return {
+          label: 'public',
+          title:
+            'Public in the community directory. Click to request unpublication.',
+          disabled: false,
+          onClick: () => onRequestCollectionPrivate(c.id),
+        };
+      case 'pending':
+        return {
+          label: 'pending',
+          title:
+            c.visibility_requested === 'private'
+              ? 'Unpublishing awaits admin approval'
+              : 'Publishing awaits admin approval',
+          disabled: true,
+          onClick: () => {},
+        };
+      default:
+        return {
+          label: 'private',
+          title: 'Click to make public (needs admin approval)',
+          disabled: false,
+          onClick: () => onRequestCollectionPublic(c.id),
         };
     }
   }
@@ -342,6 +402,21 @@ export default function Sidebar({
                   <span className="nav-label">{c.name}</span>
                   <span className="count">{c.feed_count}</span>
                 </button>
+                {(() => {
+                  const v = collectionVisibilityMeta(c);
+                  return (
+                    <button
+                      type="button"
+                      className={`coll-vis ${c.visibility_status}`}
+                      onClick={v.onClick}
+                      title={v.title}
+                      aria-label={`${v.label} — ${c.name}`}
+                      disabled={v.disabled || collectionVisibilityPending}
+                    >
+                      {v.label}
+                    </button>
+                  );
+                })()}
                 <div className="row-actions">
                   <button
                     type="button"
@@ -517,7 +592,7 @@ export default function Sidebar({
           {sharedFeeds.map((f) => {
             const added = addedUrls.has(f.url);
             return (
-              <div className="shared-row" key={f.id}>
+              <div className="shared-row" key={f.url}>
                 <span className="feed-title" title={f.url}>
                   {f.title || f.url}
                 </span>
@@ -538,33 +613,68 @@ export default function Sidebar({
         </div>
       </section>
 
-      {/* Admin moderation queue for pending share changes */}
-      {pendingShares.length > 0 && (
+      {/* Public collections: community directory (one-click import) */}
+      <section className="side-section">
+        <div className="section-head">
+          <span className="section-title">Public Collections</span>
+        </div>
+        <div className="shared-list">
+          {publicCollections.map((c) => (
+            <div className="shared-row" key={c.id}>
+              <div className="mod-info">
+                <span className="feed-title" title={c.name}>
+                  {c.name}
+                </span>
+                <span className="mod-meta">
+                  {c.owner_name} · {c.feed_count} feeds
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn tiny"
+                onClick={() => onImportCollection(c.id)}
+                disabled={importCollectionPending}
+                title={`Import all feeds from ${c.name}`}
+              >
+                {importCollectionPending ? '…' : 'Import'}
+              </button>
+            </div>
+          ))}
+          {publicCollections.length === 0 && (
+            <div className="muted small pad-x">No public collections yet.</div>
+          )}
+        </div>
+      </section>
+
+      {/* Admin moderation queue for pending feed + collection changes */}
+      {pendingShares.length > 0 || pendingCollectionShares.length > 0 ? (
         <section className="side-section moderation">
           <div className="section-head">
             <span className="section-title">Approval queue</span>
-            <span className="count">{pendingShares.length}</span>
+            <span className="count">
+              {pendingShares.length + pendingCollectionShares.length}
+            </span>
           </div>
           <div className="mod-list">
             {pendingShares.map((p) => (
-              <div className="mod-row" key={p.id}>
+              <div className="mod-row" key={`feed-${p.feed_id}`}>
                 <div className="mod-info">
                   <span className="feed-title" title={p.url}>
                     {p.title || p.url}
                   </span>
                   <span className="mod-meta">
-                    {p.share_requested === 'shared'
+                    feed ·{' '}
+                    {p.requested === 'shared'
                       ? 'wants to publish'
-                      : 'wants to unpublish'}
-                    {' · '}
-                    {p.user_email}
+                      : 'wants to unpublish'}{' '}
+                    · {p.owner_email}
                   </span>
                 </div>
                 <div className="mod-actions">
                   <button
                     type="button"
                     className="btn tiny"
-                    onClick={() => onApproveShare(p.id)}
+                    onClick={() => onApproveShare(p.feed_id)}
                     disabled={moderationPending}
                   >
                     Approve
@@ -572,8 +682,42 @@ export default function Sidebar({
                   <button
                     type="button"
                     className="btn tiny danger"
-                    onClick={() => onRejectShare(p.id)}
+                    onClick={() => onRejectShare(p.feed_id)}
                     disabled={moderationPending}
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+            {pendingCollectionShares.map((p) => (
+              <div className="mod-row" key={`coll-${p.collection_id}`}>
+                <div className="mod-info">
+                  <span className="feed-title" title={p.name}>
+                    {p.name}
+                  </span>
+                  <span className="mod-meta">
+                    collection ·{' '}
+                    {p.requested === 'public'
+                      ? 'wants to publish'
+                      : 'wants to unpublish'}{' '}
+                    · {p.owner_email}
+                  </span>
+                </div>
+                <div className="mod-actions">
+                  <button
+                    type="button"
+                    className="btn tiny"
+                    onClick={() => onApproveCollectionShare(p.collection_id)}
+                    disabled={collectionModerationPending}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    className="btn tiny danger"
+                    onClick={() => onRejectCollectionShare(p.collection_id)}
+                    disabled={collectionModerationPending}
                   >
                     Reject
                   </button>
@@ -582,7 +726,7 @@ export default function Sidebar({
             ))}
           </div>
         </section>
-      )}
+      ) : null}
     </aside>
   );
 }

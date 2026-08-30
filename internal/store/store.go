@@ -81,6 +81,36 @@ type Collection struct {
 	Name      string    `json:"name"`
 	FeedCount int       `json:"feed_count"`
 	CreatedAt time.Time `json:"created_at"`
+	// VisibilityStatus is one of "private", "pending", or "public". A
+	// collection is private unless its owner requests to publish it; making it
+	// public then waits for admin approval (pending) before it appears in the
+	// community directory.
+	VisibilityStatus string `json:"visibility_status"`
+	// VisibilityRequested is the owner's intended target ("public" or
+	// "private") while a change is pending review; nil unless
+	// VisibilityStatus is "pending".
+	VisibilityRequested *string `json:"visibility_requested"`
+}
+
+// PublicCollection is an entry in the community directory of public
+// collections: the collection's name, its owner, and the feed URLs it holds.
+type PublicCollection struct {
+	ID        int64           `json:"id"`
+	Name      string          `json:"name"`
+	OwnerName string          `json:"owner_name"`
+	FeedCount int             `json:"feed_count"`
+	Feeds     []SharedFeedURL `json:"feeds"`
+}
+
+// CollectionShareRequest is a pending collection-visibility change awaiting
+// admin review.
+type CollectionShareRequest struct {
+	CollectionID int64  `json:"collection_id"`
+	Name         string `json:"name"`
+	OwnerID      int64  `json:"owner_id"`
+	OwnerName    string `json:"owner_name"`
+	OwnerEmail   string `json:"owner_email"`
+	Requested    string `json:"requested"`
 }
 
 // Item is a single entry from a feed.
@@ -202,6 +232,30 @@ type Store interface {
 	// GetCollectionShare resolves a share token to the collection's name and
 	// feed URLs (ErrNotFound for an unknown token).
 	GetCollectionShare(ctx context.Context, token string) (*CollectionShare, error)
+
+	// Collection visibility (public/private with admin approval, mirroring
+	// feed sharing).
+	// SetCollectionVisibilityRequest moves a collection to pending with the
+	// given target. want must be "public" (from a private collection) or
+	// "private" (from a public collection); it returns ErrNotFound for a
+	// collection the user does not own and an error when the collection is
+	// already in the target or pending state.
+	SetCollectionVisibilityRequest(ctx context.Context, userID, collectionID int64, want string) (*Collection, error)
+	// ListPendingCollectionShares returns every collection whose visibility
+	// change awaits review.
+	ListPendingCollectionShares(ctx context.Context) ([]CollectionShareRequest, error)
+	// ResolveCollectionShare applies (approve) or reverts (reject) a pending
+	// change. Approving sets visibility_status to the requested target;
+	// rejecting sets it to the opposite. It returns ErrNotFound when the
+	// collection is not pending.
+	ResolveCollectionShare(ctx context.Context, collectionID int64, approve bool) (*Collection, error)
+	// ListPublicCollections returns the community directory of public
+	// collections, each with the feed URLs it holds.
+	ListPublicCollections(ctx context.Context) ([]PublicCollection, error)
+	// GetPublicCollectionForImport resolves a public collection (by ID) to its
+	// name and feed URLs so another user can import it. It returns ErrNotFound
+	// when the collection is missing or not public.
+	GetPublicCollectionForImport(ctx context.Context, collectionID int64) (*CollectionShare, error)
 
 	// Recommended feeds (admin-curated onboarding catalog).
 	ListRecommendedFeeds(ctx context.Context) ([]RecommendedFeed, error)

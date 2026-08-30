@@ -121,6 +121,26 @@ func (m *stubStore) GetCollectionShare(context.Context, string) (*store.Collecti
 	return nil, store.ErrNotFound
 }
 
+func (m *stubStore) SetCollectionVisibilityRequest(context.Context, int64, int64, string) (*store.Collection, error) {
+	return nil, store.ErrNotFound
+}
+
+func (m *stubStore) ListPendingCollectionShares(context.Context) ([]store.CollectionShareRequest, error) {
+	return []store.CollectionShareRequest{}, nil
+}
+
+func (m *stubStore) ResolveCollectionShare(context.Context, int64, bool) (*store.Collection, error) {
+	return nil, store.ErrNotFound
+}
+
+func (m *stubStore) ListPublicCollections(context.Context) ([]store.PublicCollection, error) {
+	return []store.PublicCollection{}, nil
+}
+
+func (m *stubStore) GetPublicCollectionForImport(context.Context, int64) (*store.CollectionShare, error) {
+	return nil, store.ErrNotFound
+}
+
 func (m *stubStore) ListRecommendedFeeds(context.Context) ([]store.RecommendedFeed, error) {
 	return []store.RecommendedFeed{}, nil
 }

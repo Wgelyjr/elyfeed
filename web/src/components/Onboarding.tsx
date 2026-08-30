@@ -36,6 +36,10 @@ export default function Onboarding({ onDismiss }: Props) {
     queryKey: ['shared-feeds'],
     queryFn: api.listSharedFeeds,
   });
+  const publicCollectionsQuery = useQuery({
+    queryKey: ['public-collections'],
+    queryFn: api.listPublicCollections,
+  });
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['feeds'] });
@@ -51,6 +55,10 @@ export default function Onboarding({ onDismiss }: Props) {
   const importCollection = useMutation({
     mutationFn: ({ token, name }: { token: string; name?: string }) =>
       api.importCollection(token, name),
+    onSuccess: invalidate,
+  });
+  const importCollectionById = useMutation({
+    mutationFn: (id: number) => api.importCollectionByID(id),
     onSuccess: invalidate,
   });
 
@@ -136,7 +144,7 @@ export default function Onboarding({ onDismiss }: Props) {
           <h3>Shared by the community</h3>
           <ul className="onboard-list">
             {sharedQuery.data?.map((f) => (
-              <li key={f.id} className="onboard-row">
+              <li key={f.url} className="onboard-row">
                 <span className="onboard-feed-title" title={f.url}>
                   {f.title || f.url}
                 </span>
@@ -152,6 +160,37 @@ export default function Onboarding({ onDismiss }: Props) {
             {!sharedQuery.isLoading && (sharedQuery.data?.length ?? 0) === 0 && (
               <li className="muted small">No shared feeds yet.</li>
             )}
+          </ul>
+        </section>
+
+        <section className="onboard-section">
+          <h3>Public collections</h3>
+          <ul className="onboard-list">
+            {publicCollectionsQuery.data?.map((c) => (
+              <li key={c.id} className="onboard-row">
+                <span
+                  className="onboard-feed-title"
+                  title={`${c.name} — ${c.owner_name}`}
+                >
+                  {c.name}
+                  <span className="muted small">
+                    {' '}
+                    · {c.feed_count} feeds
+                  </span>
+                </span>
+                <button
+                  className="btn tiny"
+                  disabled={importCollectionById.isPending}
+                  onClick={() => importCollectionById.mutate(c.id)}
+                >
+                  {importCollectionById.isPending ? '…' : 'Import'}
+                </button>
+              </li>
+            ))}
+            {!publicCollectionsQuery.isLoading &&
+              (publicCollectionsQuery.data?.length ?? 0) === 0 && (
+                <li className="muted small">No public collections yet.</li>
+              )}
           </ul>
         </section>
 
