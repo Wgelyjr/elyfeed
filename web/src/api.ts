@@ -1,9 +1,14 @@
 import type {
   AddFeedResult,
   Collection,
+  CollectionShare,
   Feed,
+  ImportResult,
   Item,
   ItemsResponse,
+  RecommendedFeed,
+  ShareRequest,
+  SharedFeed,
   UnreadCountResponse,
   User,
 } from './types';
@@ -109,6 +114,61 @@ export const api = {
 
   deleteCollection: (id: number): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>(`/api/collections/${id}`, { method: 'DELETE' }),
+
+  // Sharing: request to publish/unpublish a feed (admin review required).
+  requestShare: (id: number): Promise<Feed> =>
+    request<Feed>(`/api/feeds/${id}/share`, { method: 'POST' }),
+
+  requestUnshare: (id: number): Promise<Feed> =>
+    request<Feed>(`/api/feeds/${id}/unshare`, { method: 'POST' }),
+
+  listSharedFeeds: (): Promise<SharedFeed[]> =>
+    request<SharedFeed[]>('/api/shared-feeds'),
+
+  listPendingShares: (): Promise<ShareRequest[]> =>
+    request<ShareRequest[]>('/api/shared-feeds/pending'),
+
+  approveShare: (id: number): Promise<Feed> =>
+    request<Feed>(`/api/shared-feeds/${id}/approve`, { method: 'POST' }),
+
+  rejectShare: (id: number): Promise<Feed> =>
+    request<Feed>(`/api/shared-feeds/${id}/reject`, { method: 'POST' }),
+
+  listRecommendedFeeds: (): Promise<RecommendedFeed[]> =>
+    request<RecommendedFeed[]>('/api/recommended-feeds'),
+
+  createRecommendedFeed: (feed: {
+    url: string;
+    title: string;
+    site_url: string;
+  }): Promise<RecommendedFeed> =>
+    request<RecommendedFeed>('/api/recommended-feeds', {
+      method: 'POST',
+      body: JSON.stringify(feed),
+    }),
+
+  deleteRecommendedFeed: (id: number): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>(`/api/recommended-feeds/${id}`, { method: 'DELETE' }),
+
+  // Shareable collections + import.
+  createCollectionShare: (
+    id: number,
+  ): Promise<{ token: string }> =>
+    request<{ token: string }>(`/api/collections/${id}/share`, {
+      method: 'POST',
+    }),
+
+  getCollectionShare: (token: string): Promise<CollectionShare> =>
+    request<CollectionShare>(`/api/collection-shares/${encodeURIComponent(token)}`),
+
+  importCollection: (
+    token: string,
+    name?: string,
+  ): Promise<ImportResult> =>
+    request<ImportResult>('/api/imports', {
+      method: 'POST',
+      body: JSON.stringify({ token, name }),
+    }),
 
   listItems: (params: ListItemsParams): Promise<ItemsResponse> => {
     const qs = new URLSearchParams();

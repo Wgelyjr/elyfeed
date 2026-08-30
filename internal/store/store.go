@@ -24,6 +24,54 @@ type Feed struct {
 	LastFetched   *time.Time `json:"last_fetched"`
 	CreatedAt     time.Time  `json:"created_at"`
 	CollectionIDs []int64    `json:"collection_ids"`
+	// ShareStatus is one of "private", "pending", or "shared". A feed is
+	// private unless its owner requests to share it; sharing then waits for
+	// admin approval (pending) before it appears in the community directory.
+	ShareStatus string `json:"share_status"`
+	// ShareRequested is the owner's intended target ("shared" or "private")
+	// while a change is pending review; nil unless ShareStatus is "pending".
+	ShareRequested *string `json:"share_requested"`
+}
+
+// SharedFeed is an entry in the community directory of shared feeds.
+type SharedFeed struct {
+	URL       string `json:"url"`
+	Title     string `json:"title"`
+	SiteURL   string `json:"site_url"`
+	OwnerName string `json:"owner_name"`
+}
+
+// ShareRequest is a pending feed-sharing change awaiting admin review.
+type ShareRequest struct {
+	FeedID     int64  `json:"feed_id"`
+	URL        string `json:"url"`
+	Title      string `json:"title"`
+	OwnerID    int64  `json:"owner_id"`
+	OwnerName  string `json:"owner_name"`
+	OwnerEmail string `json:"owner_email"`
+	Requested  string `json:"requested"`
+}
+
+// RecommendedFeed is an admin-curated starter feed shown during onboarding.
+type RecommendedFeed struct {
+	ID        int64     `json:"id"`
+	URL       string    `json:"url"`
+	Title     string    `json:"title"`
+	SiteURL   string    `json:"site_url"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SharedFeedURL is one feed in a shared collection, for import preview.
+type SharedFeedURL struct {
+	URL   string `json:"url"`
+	Title string `json:"title"`
+}
+
+// CollectionShare is a shareable collection resolved by its token: the
+// collection's name plus the feed URLs it contains.
+type CollectionShare struct {
+	Name  string          `json:"name"`
+	Feeds []SharedFeedURL `json:"feeds"`
 }
 
 // Collection is a named group of feeds. A feed may belong to several
@@ -117,6 +165,27 @@ type Store interface {
 
 	// SetFeedCollections replaces the set of collections a feed belongs to.
 	SetFeedCollections(ctx context.Context, userID, feedID int64, collectionIDs []int64) error
+	// AddFeedsToCollection links the user's feeds to the user's collection
+	// without removing existing memberships. Feeds or a collection not owned by
+	// the user are ignored; it reports how many new links were created.
+	AddFeedsToCollection(ctx context.Context, userID int64, collectionID int64, feedIDs []int64) (int, error)
+
+	// Feed sharing. A user requests a change (want is "shared" to publish or
+	// "private" to unpublish); the change lands as pending and only takes
+	// effect once an admin resolves it.
+	// SetShareRequest moves a feed to pending with the given target. want must
+	// be "shared" (from a private feed) or "private" (from a shared feed); it
+	// returns ErrNotFound for a feed the user does not own and an error when
+	// the feed is already in the target or pending state.
+	SetShareRequest(ctx context.Context, userID, feedID int64, want string) (*Feed, error)
+	// ListPendingShares returns every feed whose sharing change awaits review.
+	ListPendingShares(ctx context.Context) ([]ShareRequest, error)
+	// ResolveShare applies (approve) or reverts (reject) a pending change.
+	// Approving sets share_status to the requested target; rejecting sets it to
+	// the opposite. It returns ErrNotFound when the feed is not pending.
+	ResolveShare(ctx context.Context, feedID int64, approve bool) (*Feed, error)
+	// ListSharedFeeds returns the community directory of shared feeds.
+	ListSharedFeeds(ctx context.Context) ([]SharedFeed, error)
 
 	// Collections
 	CreateCollection(ctx context.Context, userID int64, name string) (*Collection, error)
@@ -126,6 +195,19 @@ type Store interface {
 	ListCollections(ctx context.Context, userID int64) ([]Collection, error)
 	RenameCollection(ctx context.Context, userID, id int64, name string) (*Collection, error)
 	DeleteCollection(ctx context.Context, userID, id int64) error
+	// CreateCollectionShare creates (or regenerates) the share token for the
+	// user's collection. It returns ErrNotFound when the collection is not
+	// owned by the user.
+	CreateCollectionShare(ctx context.Context, userID, collectionID int64, token string) error
+	// GetCollectionShare resolves a share token to the collection's name and
+	// feed URLs (ErrNotFound for an unknown token).
+	GetCollectionShare(ctx context.Context, token string) (*CollectionShare, error)
+
+	// Recommended feeds (admin-curated onboarding catalog).
+	ListRecommendedFeeds(ctx context.Context) ([]RecommendedFeed, error)
+	// CreateRecommendedFeed adds (or updates, by URL) a recommended feed.
+	CreateRecommendedFeed(ctx context.Context, url, title, siteURL string) (*RecommendedFeed, error)
+	DeleteRecommendedFeed(ctx context.Context, id int64) error
 
 	// UpsertItems inserts items for a feed, ignoring ones already seen
 	// (matched by feed_id + guid). It returns the number of newly inserted

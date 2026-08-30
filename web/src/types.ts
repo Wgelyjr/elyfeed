@@ -1,5 +1,7 @@
 // Types mirror the JSON produced by the Go API (see internal/store/store.go).
 
+export type ShareStatus = 'private' | 'pending' | 'shared';
+
 export interface Feed {
   id: number;
   url: string;
@@ -8,6 +10,50 @@ export interface Feed {
   last_fetched: string | null;
   created_at: string;
   collection_ids: number[];
+  share_status: ShareStatus;
+  share_requested?: 'shared' | 'private' | null;
+}
+
+export interface SharedFeed {
+  id: number;
+  title: string;
+  url: string;
+  site_url: string;
+}
+
+export interface ShareRequest {
+  id: number;
+  title: string;
+  url: string;
+  share_requested: 'shared' | 'private';
+  user_email: string;
+}
+
+export interface RecommendedFeed {
+  id: number;
+  url: string;
+  title: string;
+  site_url: string;
+}
+
+export interface SharedFeedURL {
+  id: number;
+  url: string;
+  title: string;
+  site_url: string;
+}
+
+export interface CollectionShare {
+  id: number;
+  name: string;
+  feeds: SharedFeedURL[];
+}
+
+export interface ImportResult {
+  collection: Collection;
+  added: number;
+  total: number;
+  results: AddFeedResult[];
 }
 
 export interface Collection {

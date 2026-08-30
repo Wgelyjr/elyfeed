@@ -9,6 +9,7 @@ import { api } from './api';
 import type { Item, ItemsResponse, User } from './types';
 import Sidebar from './components/Sidebar';
 import ItemList from './components/ItemList';
+import Onboarding from './components/Onboarding';
 
 // How many items to fetch per scroll "page".
 const PAGE_SIZE = 30;
@@ -65,6 +66,25 @@ export default function App({ user, onLogout }: AppProps) {
     () => (typeof window === 'undefined' ? true : window.innerWidth >= 768),
   );
   const [loggingOut, setLoggingOut] = useState(false);
+
+  // Onboarding: shown once to a brand-new (feed-less) account until they add a
+  // feed, import one, or dismiss it. The dismissed flag is per-user so a second
+  // account on the same device gets its own onboarding.
+  const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(`elyfeed.onboarded.${user.id}`) === '1';
+    } catch {
+      return true;
+    }
+  });
+  const dismissOnboarding = () => {
+    try {
+      localStorage.setItem(`elyfeed.onboarded.${user.id}`, '1');
+    } catch {
+      // storage unavailable; just hide it for this session
+    }
+    setOnboardingDismissed(true);
+  };
 
   // Best-effort server-side logout; the local session ends either way.
   const handleLogout = async () => {
@@ -206,6 +226,59 @@ export default function App({ user, onLogout }: AppProps) {
     onSuccess: invalidateAll,
   });
 
+  const isAdmin = user.role === 'admin';
+
+  // Community shared-feed directory (sidebar) and the admin moderation queue.
+  const sharedFeedsQuery = useQuery({
+    queryKey: ['shared-feeds'],
+    queryFn: api.listSharedFeeds,
+  });
+  const pendingSharesQuery = useQuery({
+    queryKey: ['pending-shares'],
+    queryFn: api.listPendingShares,
+    enabled: isAdmin,
+    refetchInterval: 30_000,
+  });
+
+  const requestShare = useMutation({
+    mutationFn: (id: number) => api.requestShare(id),
+    onSuccess: invalidateAll,
+  });
+  const requestUnshare = useMutation({
+    mutationFn: (id: number) => api.requestUnshare(id),
+    onSuccess: invalidateAll,
+  });
+  const approveShare = useMutation({
+    mutationFn: (id: number) => api.approveShare(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['feeds'] });
+      queryClient.invalidateQueries({ queryKey: ['shared-feeds'] });
+      queryClient.invalidateQueries({ queryKey: ['pending-shares'] });
+    },
+  });
+  const rejectShare = useMutation({
+    mutationFn: (id: number) => api.rejectShare(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['feeds'] });
+      queryClient.invalidateQueries({ queryKey: ['shared-feeds'] });
+      queryClient.invalidateQueries({ queryKey: ['pending-shares'] });
+    },
+  });
+
+  // The collection whose share link was just generated (for the "copied" hint).
+  const [collectionShare, setCollectionShare] = useState<{
+    id: number;
+    link: string;
+  } | null>(null);
+  const createCollectionShare = useMutation({
+    mutationFn: (id: number) => api.createCollectionShare(id),
+    onSuccess: (data, id) => {
+      const link = `${window.location.origin}/#share=${data.token}`;
+      void navigator.clipboard?.writeText(link).catch(() => {});
+      setCollectionShare({ id, link });
+    },
+  });
+
   const selectedFeed =
     feedsQuery.data?.find((f) => f.id === selectedFeedId) ?? null;
   const selectedCollection =
@@ -252,6 +325,14 @@ export default function App({ user, onLogout }: AppProps) {
     if (ids.length > 0) markRead.mutate(ids);
   }
 
+  // Gate the first run behind onboarding: the user has no feeds yet and has
+  // not dismissed it. Adding a feed / importing flips feedsQuery.length > 0.
+  const hasNoFeeds =
+    feedsQuery.isSuccess && (feedsQuery.data?.length ?? 0) === 0;
+  if (hasNoFeeds && !onboardingDismissed) {
+    return <Onboarding onDismiss={dismissOnboarding} />;
+  }
+
   return (
     <div className="app">
       <Sidebar
@@ -281,6 +362,17 @@ export default function App({ user, onLogout }: AppProps) {
           renameCollection.isPending ||
           deleteCollection.isPending
         }
+        sharedFeeds={sharedFeedsQuery.data ?? []}
+        onAddSharedFeed={(url) => addFeed.mutate(url)}
+        pendingShares={pendingSharesQuery.data ?? []}
+        onApproveShare={(id) => approveShare.mutate(id)}
+        onRejectShare={(id) => rejectShare.mutate(id)}
+        moderationPending={approveShare.isPending || rejectShare.isPending}
+        onRequestShare={(id) => requestShare.mutate(id)}
+        onRequestUnshare={(id) => requestUnshare.mutate(id)}
+        sharePending={requestShare.isPending || requestUnshare.isPending}
+        onCreateCollectionShare={(id) => createCollectionShare.mutate(id)}
+        collectionShare={collectionShare}
       />
 
       <main className="main">

@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +56,18 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS, a *auth.Service) 
 	mux.HandleFunc("POST /api/collections", s.handleCreateCollection)
 	mux.HandleFunc("PATCH /api/collections/{id}", s.handleRenameCollection)
 	mux.HandleFunc("DELETE /api/collections/{id}", s.handleDeleteCollection)
+	mux.HandleFunc("POST /api/collections/{id}/share", s.handleCreateCollectionShare)
+	mux.HandleFunc("GET /api/collection-shares/{token}", s.handleGetCollectionShare)
+	mux.HandleFunc("POST /api/imports", s.handleImport)
+	mux.HandleFunc("POST /api/feeds/{id}/share", s.handleRequestShare)
+	mux.HandleFunc("POST /api/feeds/{id}/unshare", s.handleRequestUnshare)
+	mux.HandleFunc("GET /api/shared-feeds", s.handleListSharedFeeds)
+	mux.HandleFunc("GET /api/shared-feeds/pending", s.handleListPendingShares)
+	mux.HandleFunc("POST /api/shared-feeds/{id}/approve", s.handleApproveShare)
+	mux.HandleFunc("POST /api/shared-feeds/{id}/reject", s.handleRejectShare)
+	mux.HandleFunc("GET /api/recommended-feeds", s.handleListRecommendedFeeds)
+	mux.HandleFunc("POST /api/recommended-feeds", s.handleCreateRecommendedFeed)
+	mux.HandleFunc("DELETE /api/recommended-feeds/{id}", s.handleDeleteRecommendedFeed)
 	mux.HandleFunc("GET /api/items", s.handleListItems)
 	mux.HandleFunc("GET /api/items/unread-count", s.handleUnreadCount)
 	mux.HandleFunc("POST /api/items/{id}/read", s.handleSetItemRead)
@@ -80,6 +93,23 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS, a *auth.Service) 
 // when the request carries no authenticated user.
 func (s *Server) currentUser(r *http.Request) (int64, bool) {
 	return auth.UserIDFromContext(r.Context())
+}
+
+// requireAdmin authenticates the request and checks the caller is an admin.
+// It writes a 401 (unauthenticated) or 403 (not an admin) and returns ok=false
+// otherwise.
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return 0, false
+	}
+	u, err := s.store.GetUser(r.Context(), userID)
+	if err != nil || u.Role != "admin" {
+		writeError(w, http.StatusForbidden, "admin access required")
+		return 0, false
+	}
+	return userID, true
 }
 
 // --- feeds ---
@@ -334,6 +364,316 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// --- sharing ---
+
+// handleRequestShare marks the user's private feed as pending-share.
+func (s *Server) handleRequestShare(w http.ResponseWriter, r *http.Request) {
+	s.setShareRequest(w, r, "shared")
+}
+
+// handleRequestUnshare marks the user's shared feed as pending-unshare.
+func (s *Server) handleRequestUnshare(w http.ResponseWriter, r *http.Request) {
+	s.setShareRequest(w, r, "private")
+}
+
+func (s *Server) setShareRequest(w http.ResponseWriter, r *http.Request, want string) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	feed, err := s.store.SetShareRequest(r.Context(), userID, id, want)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "feed not found")
+			return
+		}
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, feed)
+}
+
+// handleListSharedFeeds is the community directory of shared feeds.
+func (s *Server) handleListSharedFeeds(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.currentUser(r); !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	feeds, err := s.store.ListSharedFeeds(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if feeds == nil {
+		feeds = []store.SharedFeed{}
+	}
+	writeJSON(w, http.StatusOK, feeds)
+}
+
+// handleListPendingShares returns the admin queue of pending share changes.
+func (s *Server) handleListPendingShares(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	reqs, err := s.store.ListPendingShares(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if reqs == nil {
+		reqs = []store.ShareRequest{}
+	}
+	writeJSON(w, http.StatusOK, reqs)
+}
+
+func (s *Server) handleApproveShare(w http.ResponseWriter, r *http.Request) {
+	s.resolveShare(w, r, true)
+}
+
+func (s *Server) handleRejectShare(w http.ResponseWriter, r *http.Request) {
+	s.resolveShare(w, r, false)
+}
+
+func (s *Server) resolveShare(w http.ResponseWriter, r *http.Request, approve bool) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	feed, err := s.store.ResolveShare(r.Context(), id, approve)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no pending change for this feed")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, feed)
+}
+
+// --- recommended feeds ---
+
+func (s *Server) handleListRecommendedFeeds(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.currentUser(r); !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	feeds, err := s.store.ListRecommendedFeeds(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if feeds == nil {
+		feeds = []store.RecommendedFeed{}
+	}
+	writeJSON(w, http.StatusOK, feeds)
+}
+
+func (s *Server) handleCreateRecommendedFeed(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	var req struct {
+		URL     string `json:"url"`
+		Title   string `json:"title"`
+		SiteURL string `json:"site_url"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	u := strings.TrimSpace(req.URL)
+	if u == "" {
+		writeError(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	parsed, err := url.Parse(u)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		writeError(w, http.StatusBadRequest, "url must be a valid http(s) URL")
+		return
+	}
+	rf, err := s.store.CreateRecommendedFeed(r.Context(), u, strings.TrimSpace(req.Title), strings.TrimSpace(req.SiteURL))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, rf)
+}
+
+func (s *Server) handleDeleteRecommendedFeed(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	if err := s.store.DeleteRecommendedFeed(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "recommended feed not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// --- shareable collections + import ---
+
+// handleCreateCollectionShare generates (or regenerates) a collection's share
+// token and returns it.
+func (s *Server) handleCreateCollectionShare(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	token, err := auth.NewToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.store.CreateCollectionShare(r.Context(), userID, id, token); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "collection not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"token": token})
+}
+
+// handleGetCollectionShare previews a share token (name + feed URLs) without
+// importing it.
+func (s *Server) handleGetCollectionShare(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.currentUser(r); !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	cs, err := s.store.GetCollectionShare(r.Context(), r.PathValue("token"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "share link not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cs)
+}
+
+// handleImport imports a shared collection: it creates a (collision-free)
+// collection for the user, adds the shared feeds to the account, and links them
+// to the new collection.
+func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+		Name  string `json:"name"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
+		writeError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+	cs, err := s.store.GetCollectionShare(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "share link not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = cs.Name
+	}
+	if name == "" {
+		name = "Imported"
+	}
+	name = s.uniqueCollectionName(r.Context(), userID, name)
+
+	collection, err := s.store.CreateCollection(r.Context(), userID, name)
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	urls := make([]string, 0, len(cs.Feeds))
+	for _, f := range cs.Feeds {
+		if u := strings.TrimSpace(f.URL); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	results := s.refresher.AddFeeds(r.Context(), userID, urls)
+	addedIDs := make([]int64, 0, len(results))
+	for _, res := range results {
+		if res.Feed != nil {
+			addedIDs = append(addedIDs, res.Feed.ID)
+		}
+	}
+	if len(addedIDs) > 0 {
+		if _, err := s.store.AddFeedsToCollection(r.Context(), userID, collection.ID, addedIDs); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"collection": collection,
+		"added":      len(addedIDs),
+		"total":      len(urls),
+		"results":    results,
+	})
+}
+
+// uniqueCollectionName returns name if it is free for the user, otherwise a
+// suffixed variant.
+func (s *Server) uniqueCollectionName(ctx context.Context, userID int64, name string) string {
+	cols, err := s.store.ListCollections(ctx, userID)
+	if err != nil {
+		return name
+	}
+	taken := make(map[string]bool, len(cols))
+	for _, c := range cols {
+		taken[strings.ToLower(c.Name)] = true
+	}
+	if !taken[strings.ToLower(name)] {
+		return name
+	}
+	for i := 2; ; i++ {
+		cand := fmt.Sprintf("%s (%d)", name, i)
+		if !taken[strings.ToLower(cand)] {
+			return cand
+		}
+	}
+}
+
 // --- items ---
 
 func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
@@ -563,6 +903,18 @@ var apiEndpoints = []struct {
 	{"POST", "/api/collections", "Create a collection, body {\"name\": \"...\"}", true},
 	{"PATCH", "/api/collections/{id}", "Rename a collection, body {\"name\": \"...\"}", true},
 	{"DELETE", "/api/collections/{id}", "Delete a collection", true},
+	{"POST", "/api/collections/{id}/share", "Create or regenerate a collection's share token; returns {\"token\": \"...\"}", true},
+	{"GET", "/api/collection-shares/{token}", "Preview a share token: the collection's name and feed URLs", true},
+	{"POST", "/api/imports", "Import a shared collection, body {\"token\": \"...\", \"name\": \"...\" (optional)}", true},
+	{"POST", "/api/feeds/{id}/share", "Request to publish a feed (moves it to pending admin review)", true},
+	{"POST", "/api/feeds/{id}/unshare", "Request to unpublish a feed (moves it to pending admin review)", true},
+	{"GET", "/api/shared-feeds", "Community directory of shared feeds", true},
+	{"GET", "/api/shared-feeds/pending", "Pending share changes awaiting admin review", true},
+	{"POST", "/api/shared-feeds/{id}/approve", "Approve a pending share change", true},
+	{"POST", "/api/shared-feeds/{id}/reject", "Reject a pending share change", true},
+	{"GET", "/api/recommended-feeds", "Admin-curated starter feeds shown during onboarding", true},
+	{"POST", "/api/recommended-feeds", "Add (or update) a recommended feed, body {\"url\": \"...\", \"title\": \"...\", \"site_url\": \"...\"}", true},
+	{"DELETE", "/api/recommended-feeds/{id}", "Remove a recommended feed", true},
 	{"GET", "/api/items", "List items. Query: feed_id, collection_id, unread (true|false), since, until (RFC3339), limit (1-200), offset", true},
 	{"GET", "/api/items/unread-count", "Total unread item count", true},
 	{"POST", "/api/items/{id}/read", "Set an item's read state, body {\"read\": true}", true},

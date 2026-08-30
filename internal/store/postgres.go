@@ -25,15 +25,34 @@ func NewPostgres(pool *pgxpool.Pool) *Postgres {
 	return &Postgres{pool: pool}
 }
 
+// feedColumns is the SELECT/RETURNING column list for a full feed row,
+// including its sharing state.
+const feedColumns = `id, user_id, url, title, site_url, last_fetched, created_at, share_status, share_requested`
+
+// scanFeed scans a full feed row (see feedColumns); share_requested is NULL
+// unless the feed is pending.
+func scanFeed(s rowScanner, f *Feed) error {
+	var req sql.NullString
+	if err := s.Scan(&f.ID, &f.UserID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt, &f.ShareStatus, &req); err != nil {
+		return err
+	}
+	if req.Valid {
+		f.ShareRequested = &req.String
+	} else {
+		f.ShareRequested = nil
+	}
+	return nil
+}
+
 func (s *Postgres) CreateFeed(ctx context.Context, userID int64, url, title, siteURL string) (*Feed, error) {
-	var f Feed
-	err := s.pool.QueryRow(ctx,
+	row := s.pool.QueryRow(ctx,
 		`INSERT INTO feeds (user_id, url, title, site_url) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (user_id, url) DO UPDATE SET title = EXCLUDED.title, site_url = EXCLUDED.site_url
-		 RETURNING id, user_id, url, title, site_url, last_fetched, created_at`,
+		 RETURNING `+feedColumns,
 		userID, url, title, siteURL,
-	).Scan(&f.ID, &f.UserID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt)
-	if err != nil {
+	)
+	var f Feed
+	if err := scanFeed(row, &f); err != nil {
 		return nil, fmt.Errorf("create feed: %w", err)
 	}
 	f.CollectionIDs = []int64{}
@@ -42,7 +61,7 @@ func (s *Postgres) CreateFeed(ctx context.Context, userID int64, url, title, sit
 
 func (s *Postgres) ListFeeds(ctx context.Context, userID int64) ([]Feed, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, user_id, url, title, site_url, last_fetched, created_at
+		`SELECT `+feedColumns+`
 		 FROM feeds WHERE user_id = $1 ORDER BY title ASC, id ASC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list feeds: %w", err)
@@ -52,7 +71,7 @@ func (s *Postgres) ListFeeds(ctx context.Context, userID int64) ([]Feed, error) 
 	out := make([]Feed, 0)
 	for rows.Next() {
 		var f Feed
-		if err := rows.Scan(&f.ID, &f.UserID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt); err != nil {
+		if err := scanFeed(rows, &f); err != nil {
 			return nil, fmt.Errorf("scan feed: %w", err)
 		}
 		out = append(out, f)
@@ -188,6 +207,149 @@ func (s *Postgres) SetFeedCollections(ctx context.Context, userID, feedID int64,
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// AddFeedsToCollection links the user's feeds to the user's collection without
+// removing existing memberships. Feeds not owned by the user are ignored, and
+// nothing happens if the collection is not owned by the user.
+func (s *Postgres) AddFeedsToCollection(ctx context.Context, userID int64, collectionID int64, feedIDs []int64) (int, error) {
+	if len(feedIDs) == 0 {
+		return 0, nil
+	}
+	// $1 = collection id, $2 = user id, $3.. = feed ids.
+	ph := make([]string, len(feedIDs))
+	for i := range feedIDs {
+		ph[i] = "$" + itoa(i+3)
+	}
+	sql := `INSERT INTO feed_collections (feed_id, collection_id)
+		 SELECT f.id, $1
+		 FROM feeds f
+		 WHERE f.user_id = $2 AND f.id IN (`+strings.Join(ph, ",")+`)
+		   AND $1 IN (SELECT id FROM collections WHERE user_id = $2)
+		 ON CONFLICT (feed_id, collection_id) DO NOTHING`
+	args := append([]any{collectionID, userID}, toAny(feedIDs)...)
+	tag, err := s.pool.Exec(ctx, sql, args...)
+	if err != nil {
+		return 0, fmt.Errorf("add feeds to collection: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// --- feed sharing ---
+
+// SetShareRequest moves a feed to pending with the given target ("shared" from
+// a private feed, "private" from a shared feed).
+func (s *Postgres) SetShareRequest(ctx context.Context, userID, feedID int64, want string) (*Feed, error) {
+	var from, to string
+	switch want {
+	case "shared":
+		from, to = "private", "shared"
+	case "private":
+		from, to = "shared", "private"
+	default:
+		return nil, fmt.Errorf("invalid share target %q", want)
+	}
+
+	row := s.pool.QueryRow(ctx,
+		`UPDATE feeds
+		 SET share_status = 'pending', share_requested = $4
+		 WHERE id = $1 AND user_id = $2 AND share_status = $3
+		 RETURNING `+feedColumns,
+		feedID, userID, from, to,
+	)
+	var f Feed
+	if err := scanFeed(row, &f); err != nil {
+		if rowsAffectedZero(err) {
+			// Distinguish "not owned" from "already in another state".
+			var cur string
+			if err := s.pool.QueryRow(ctx,
+				`SELECT share_status FROM feeds WHERE id = $1 AND user_id = $2`, feedID, userID,
+			).Scan(&cur); err != nil {
+				if rowsAffectedZero(err) {
+					return nil, ErrNotFound
+				}
+				return nil, fmt.Errorf("get share state: %w", err)
+			}
+			return nil, fmt.Errorf("feed is currently %s", cur)
+		}
+		return nil, fmt.Errorf("set share request: %w", err)
+	}
+	return &f, nil
+}
+
+// ListPendingShares returns every feed whose sharing change awaits review.
+func (s *Postgres) ListPendingShares(ctx context.Context) ([]ShareRequest, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT f.id, f.url, f.title, f.share_requested, u.id, u.display_name, u.email
+		 FROM feeds f JOIN users u ON u.id = f.user_id
+		 WHERE f.share_status = 'pending'
+		 ORDER BY f.title ASC, f.id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list pending shares: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ShareRequest, 0)
+	for rows.Next() {
+		var r ShareRequest
+		if err := rows.Scan(&r.FeedID, &r.URL, &r.Title, &r.Requested, &r.OwnerID, &r.OwnerName, &r.OwnerEmail); err != nil {
+			return nil, fmt.Errorf("scan pending share: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending shares: %w", err)
+	}
+	return out, nil
+}
+
+// ResolveShare applies (approve) or reverts (reject) a pending change.
+func (s *Postgres) ResolveShare(ctx context.Context, feedID int64, approve bool) (*Feed, error) {
+	set := `SET share_status = share_requested, share_requested = NULL`
+	if !approve {
+		set = `SET share_status = CASE share_requested WHEN 'shared' THEN 'private' ELSE 'shared' END,
+		       share_requested = NULL`
+	}
+	row := s.pool.QueryRow(ctx,
+		`UPDATE feeds `+set+`
+		 WHERE id = $1 AND share_status = 'pending' AND share_requested IS NOT NULL
+		 RETURNING `+feedColumns,
+		feedID,
+	)
+	var f Feed
+	if err := scanFeed(row, &f); err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("resolve share: %w", err)
+	}
+	return &f, nil
+}
+
+// ListSharedFeeds returns the community directory of shared feeds.
+func (s *Postgres) ListSharedFeeds(ctx context.Context) ([]SharedFeed, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT f.url, f.title, f.site_url, u.display_name
+		 FROM feeds f JOIN users u ON u.id = f.user_id
+		 WHERE f.share_status = 'shared'
+		 ORDER BY f.title ASC, f.id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list shared feeds: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]SharedFeed, 0)
+	for rows.Next() {
+		var sf SharedFeed
+		if err := rows.Scan(&sf.URL, &sf.Title, &sf.SiteURL, &sf.OwnerName); err != nil {
+			return nil, fmt.Errorf("scan shared feed: %w", err)
+		}
+		out = append(out, sf)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate shared feeds: %w", err)
+	}
+	return out, nil
 }
 
 func (s *Postgres) TouchFeed(ctx context.Context, userID, id int64) error {
@@ -658,6 +820,120 @@ func (s *Postgres) DeleteCollection(ctx context.Context, userID, id int64) error
 	tag, err := s.pool.Exec(ctx, `DELETE FROM collections WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
 		return fmt.Errorf("delete collection: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CreateCollectionShare creates (or regenerates) the share token for the user's
+// collection, keyed by collection id so regenerating replaces the old token.
+func (s *Postgres) CreateCollectionShare(ctx context.Context, userID, collectionID int64, token string) error {
+	row := s.pool.QueryRow(ctx,
+		`INSERT INTO collection_shares (collection_id, token)
+		 SELECT $1, $2 FROM collections WHERE id = $1 AND user_id = $3
+		 ON CONFLICT (collection_id) DO UPDATE
+		   SET token = EXCLUDED.token, created_at = now()
+		 RETURNING token`,
+		collectionID, token, userID,
+	)
+	var got string
+	if err := row.Scan(&got); err != nil {
+		if rowsAffectedZero(err) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("create collection share: %w", err)
+	}
+	return nil
+}
+
+// GetCollectionShare resolves a share token to the collection's name and feed
+// URLs.
+func (s *Postgres) GetCollectionShare(ctx context.Context, token string) (*CollectionShare, error) {
+	var cs CollectionShare
+	if err := s.pool.QueryRow(ctx,
+		`SELECT c.name
+		 FROM collections c JOIN collection_shares cs ON cs.collection_id = c.id
+		 WHERE cs.token = $1`, token,
+	).Scan(&cs.Name); err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get collection share: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT f.url, f.title
+		 FROM collection_shares cs
+		 JOIN collections c ON c.id = cs.collection_id
+		 JOIN feed_collections fc ON fc.collection_id = c.id
+		 JOIN feeds f ON f.id = fc.feed_id
+		 WHERE cs.token = $1
+		 ORDER BY f.title ASC, f.id ASC`, token)
+	if err != nil {
+		return nil, fmt.Errorf("list shared feeds: %w", err)
+	}
+	defer rows.Close()
+
+	feeds := make([]SharedFeedURL, 0)
+	for rows.Next() {
+		var u SharedFeedURL
+		if err := rows.Scan(&u.URL, &u.Title); err != nil {
+			return nil, fmt.Errorf("scan shared feed: %w", err)
+		}
+		feeds = append(feeds, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate shared feeds: %w", err)
+	}
+	cs.Feeds = feeds
+	return &cs, nil
+}
+
+// ListRecommendedFeeds returns the admin-curated onboarding catalog.
+func (s *Postgres) ListRecommendedFeeds(ctx context.Context) ([]RecommendedFeed, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, url, title, site_url, created_at
+		 FROM recommended_feeds ORDER BY title ASC, id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list recommended feeds: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]RecommendedFeed, 0)
+	for rows.Next() {
+		var rf RecommendedFeed
+		if err := rows.Scan(&rf.ID, &rf.URL, &rf.Title, &rf.SiteURL, &rf.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan recommended feed: %w", err)
+		}
+		out = append(out, rf)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recommended feeds: %w", err)
+	}
+	return out, nil
+}
+
+// CreateRecommendedFeed adds a recommended feed, or updates title/site by URL.
+func (s *Postgres) CreateRecommendedFeed(ctx context.Context, url, title, siteURL string) (*RecommendedFeed, error) {
+	var rf RecommendedFeed
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO recommended_feeds (url, title, site_url) VALUES ($1, $2, $3)
+		 ON CONFLICT (url) DO UPDATE SET title = EXCLUDED.title, site_url = EXCLUDED.site_url
+		 RETURNING id, url, title, site_url, created_at`,
+		url, title, siteURL,
+	).Scan(&rf.ID, &rf.URL, &rf.Title, &rf.SiteURL, &rf.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("create recommended feed: %w", err)
+	}
+	return &rf, nil
+}
+
+func (s *Postgres) DeleteRecommendedFeed(ctx context.Context, id int64) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM recommended_feeds WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete recommended feed: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

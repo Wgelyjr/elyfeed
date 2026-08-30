@@ -838,6 +838,248 @@ body {
   text-overflow: ellipsis;
 }
 
+/* --- Share-status pill on a feed row --- */
+.share-pill {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.62rem;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.18rem 0.35rem;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.share-pill:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.share-pill:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.share-pill.shared {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: transparent;
+}
+
+.share-pill.pending {
+  color: #b45309;
+  border-color: #b45309;
+}
+
+@media (prefers-color-scheme: dark) {
+  .share-pill.pending {
+    color: #f59e0b;
+    border-color: #f59e0b;
+  }
+}
+
+/* --- Shared feeds directory (sidebar) --- */
+.shared-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.shared-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+}
+
+.shared-row:hover {
+  background: var(--bg);
+}
+
+.shared-row .feed-title {
+  flex: 1;
+  min-width: 0;
+}
+
+/* --- Admin moderation queue (sidebar) --- */
+.moderation {
+  border-top: 1px solid var(--accent);
+}
+
+.mod-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0 0.25rem 0.35rem;
+}
+
+.mod-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.mod-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.mod-info .feed-title {
+  font-size: 0.82rem;
+}
+
+.mod-meta {
+  font-size: 0.7rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mod-actions {
+  display: flex;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+}
+
+/* --- Onboarding (first run) --- */
+.onboard {
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 1.5rem 1rem;
+  padding-top: calc(1.5rem + env(safe-area-inset-top));
+  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
+}
+
+.onboard-card {
+  width: 100%;
+  max-width: 520px;
+  margin: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+}
+
+.onboard-brand {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.5rem;
+}
+
+.onboard-card h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.2rem;
+}
+
+.onboard-sub {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.onboard-add {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
+}
+
+.onboard-add input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.onboard-section {
+  margin-top: 1.25rem;
+}
+
+.onboard-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.onboard-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.onboard-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.onboard-feed-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.88rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.onboard-import {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.onboard-import input {
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+.onboard-import .btn {
+  align-self: flex-start;
+}
+
+.onboard-footer {
+  margin-top: 1.5rem;
+  text-align: center;
+}
+
 /* --- Phones / small screens: nav becomes a slide-in drawer --- */
 @media (max-width: 767px) {
   .sidebar {
