@@ -124,6 +124,9 @@ export const api = {
   requestUnshare: (id: number): Promise<Feed> =>
     request<Feed>(`/api/feeds/${id}/unshare`, { method: 'POST' }),
 
+  cancelShareRequest: (id: number): Promise<Feed> =>
+    request<Feed>(`/api/feeds/${id}/cancel-share`, { method: 'POST' }),
+
   listSharedFeeds: (): Promise<SharedFeed[]> =>
     request<SharedFeed[]>('/api/shared-feeds'),
 
@@ -178,6 +181,9 @@ export const api = {
 
   requestCollectionPrivate: (id: number): Promise<Collection> =>
     request<Collection>(`/api/collections/${id}/make-private`, { method: 'POST' }),
+
+  cancelCollectionVisibilityRequest: (id: number): Promise<Collection> =>
+    request<Collection>(`/api/collections/${id}/cancel-visibility`, { method: 'POST' }),
 
   importCollectionByID: (id: number): Promise<ImportResult> =>
     request<ImportResult>(`/api/collections/${id}/import`, { method: 'POST' }),

@@ -109,6 +109,10 @@ func (m *stubStore) ResolveShare(context.Context, int64, bool) (*store.Feed, err
 	return nil, store.ErrNotFound
 }
 
+func (m *stubStore) CancelShareRequest(context.Context, int64, int64) (*store.Feed, error) {
+	return nil, store.ErrNotFound
+}
+
 func (m *stubStore) ListSharedFeeds(context.Context) ([]store.SharedFeed, error) {
 	return []store.SharedFeed{}, nil
 }
@@ -130,6 +134,10 @@ func (m *stubStore) ListPendingCollectionShares(context.Context) ([]store.Collec
 }
 
 func (m *stubStore) ResolveCollectionShare(context.Context, int64, bool) (*store.Collection, error) {
+	return nil, store.ErrNotFound
+}
+
+func (m *stubStore) CancelCollectionVisibilityRequest(context.Context, int64, int64) (*store.Collection, error) {
 	return nil, store.ErrNotFound
 }
 

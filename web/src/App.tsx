@@ -260,6 +260,10 @@ export default function App({ user, onLogout }: AppProps) {
     mutationFn: (id: number) => api.requestUnshare(id),
     onSuccess: invalidateAll,
   });
+  const cancelShareRequest = useMutation({
+    mutationFn: (id: number) => api.cancelShareRequest(id),
+    onSuccess: invalidateAll,
+  });
   const approveShare = useMutation({
     mutationFn: (id: number) => api.approveShare(id),
     onSuccess: () => {
@@ -288,6 +292,10 @@ export default function App({ user, onLogout }: AppProps) {
   });
   const requestCollectionPrivate = useMutation({
     mutationFn: (id: number) => api.requestCollectionPrivate(id),
+    onSuccess: invalidateCollectionVisibility,
+  });
+  const cancelCollectionVisibilityRequest = useMutation({
+    mutationFn: (id: number) => api.cancelCollectionVisibilityRequest(id),
     onSuccess: invalidateCollectionVisibility,
   });
   const importCollectionById = useMutation({
@@ -413,7 +421,12 @@ export default function App({ user, onLogout }: AppProps) {
         moderationPending={approveShare.isPending || rejectShare.isPending}
         onRequestShare={(id) => requestShare.mutate(id)}
         onRequestUnshare={(id) => requestUnshare.mutate(id)}
-        sharePending={requestShare.isPending || requestUnshare.isPending}
+        onCancelShareRequest={(id) => cancelShareRequest.mutate(id)}
+        sharePending={
+          requestShare.isPending ||
+          requestUnshare.isPending ||
+          cancelShareRequest.isPending
+        }
         onCreateCollectionShare={(id) => createCollectionShare.mutate(id)}
         collectionShare={collectionShare}
         publicCollections={publicCollectionsQuery.data ?? []}
@@ -421,9 +434,13 @@ export default function App({ user, onLogout }: AppProps) {
         importCollectionPending={importCollectionById.isPending}
         onRequestCollectionPublic={(id) => requestCollectionPublic.mutate(id)}
         onRequestCollectionPrivate={(id) => requestCollectionPrivate.mutate(id)}
+        onCancelCollectionVisibilityRequest={(id) =>
+          cancelCollectionVisibilityRequest.mutate(id)
+        }
         collectionVisibilityPending={
           requestCollectionPublic.isPending ||
-          requestCollectionPrivate.isPending
+          requestCollectionPrivate.isPending ||
+          cancelCollectionVisibilityRequest.isPending
         }
         pendingCollectionShares={pendingCollectionSharesQuery.data ?? []}
         onApproveCollectionShare={(id) => approveCollectionShare.mutate(id)}

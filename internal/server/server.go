@@ -61,6 +61,7 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS, a *auth.Service) 
 	mux.HandleFunc("POST /api/imports", s.handleImport)
 	mux.HandleFunc("POST /api/collections/{id}/make-public", s.handleRequestCollectionPublic)
 	mux.HandleFunc("POST /api/collections/{id}/make-private", s.handleRequestCollectionPrivate)
+	mux.HandleFunc("POST /api/collections/{id}/cancel-visibility", s.handleCancelCollectionVisibilityRequest)
 	mux.HandleFunc("POST /api/collections/{id}/import", s.handleImportCollection)
 	mux.HandleFunc("GET /api/public-collections", s.handleListPublicCollections)
 	mux.HandleFunc("GET /api/public-collections/pending", s.handleListPendingCollectionShares)
@@ -72,6 +73,7 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS, a *auth.Service) 
 	mux.HandleFunc("GET /api/shared-feeds/pending", s.handleListPendingShares)
 	mux.HandleFunc("POST /api/shared-feeds/{id}/approve", s.handleApproveShare)
 	mux.HandleFunc("POST /api/shared-feeds/{id}/reject", s.handleRejectShare)
+	mux.HandleFunc("POST /api/feeds/{id}/cancel-share", s.handleCancelShareRequest)
 	mux.HandleFunc("GET /api/recommended-feeds", s.handleListRecommendedFeeds)
 	mux.HandleFunc("POST /api/recommended-feeds", s.handleCreateRecommendedFeed)
 	mux.HandleFunc("DELETE /api/recommended-feeds/{id}", s.handleDeleteRecommendedFeed)
@@ -466,6 +468,30 @@ func (s *Server) resolveShare(w http.ResponseWriter, r *http.Request, approve bo
 	writeJSON(w, http.StatusOK, feed)
 }
 
+// handleCancelShareRequest lets the owner withdraw their own pending share
+// change, reverting the feed to its pre-request state.
+func (s *Server) handleCancelShareRequest(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	feed, err := s.store.CancelShareRequest(r.Context(), userID, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no pending change for this feed")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, feed)
+}
+
 // --- recommended feeds ---
 
 func (s *Server) handleListRecommendedFeeds(w http.ResponseWriter, r *http.Request) {
@@ -817,6 +843,30 @@ func (s *Server) resolveCollectionShare(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, collection)
 }
 
+// handleCancelCollectionVisibilityRequest lets the owner withdraw their own
+// pending visibility change, reverting the collection to its pre-request state.
+func (s *Server) handleCancelCollectionVisibilityRequest(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id, ok := parseID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	collection, err := s.store.CancelCollectionVisibilityRequest(r.Context(), userID, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no pending change for this collection")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, collection)
+}
+
 // uniqueCollectionName returns name if it is free for the user, otherwise a
 // suffixed variant.
 func (s *Server) uniqueCollectionName(ctx context.Context, userID int64, name string) string {
@@ -1073,6 +1123,7 @@ var apiEndpoints = []struct {
 	{"POST", "/api/imports", "Import a shared collection, body {\"token\": \"...\", \"name\": \"...\" (optional)}", true},
 	{"POST", "/api/collections/{id}/make-public", "Request to make a collection public (moves it to pending admin review)", true},
 	{"POST", "/api/collections/{id}/make-private", "Request to make a collection private (moves it to pending admin review)", true},
+	{"POST", "/api/collections/{id}/cancel-visibility", "Cancel your own pending collection visibility change (reverts to pre-request state)", true},
 	{"POST", "/api/collections/{id}/import", "Import a public collection by ID (creates a new collection with its feeds)", true},
 	{"GET", "/api/public-collections", "Community directory of public collections (with their feed URLs)", true},
 	{"GET", "/api/public-collections/pending", "Pending collection visibility changes awaiting admin review", true},
@@ -1080,6 +1131,7 @@ var apiEndpoints = []struct {
 	{"POST", "/api/public-collections/{id}/reject", "Reject a pending collection visibility change", true},
 	{"POST", "/api/feeds/{id}/share", "Request to publish a feed (moves it to pending admin review)", true},
 	{"POST", "/api/feeds/{id}/unshare", "Request to unpublish a feed (moves it to pending admin review)", true},
+	{"POST", "/api/feeds/{id}/cancel-share", "Cancel your own pending share change (reverts to pre-request state)", true},
 	{"GET", "/api/shared-feeds", "Community directory of shared feeds", true},
 	{"GET", "/api/shared-feeds/pending", "Pending share changes awaiting admin review", true},
 	{"POST", "/api/shared-feeds/{id}/approve", "Approve a pending share change", true},

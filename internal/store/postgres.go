@@ -335,6 +335,28 @@ func (s *Postgres) ResolveShare(ctx context.Context, feedID int64, approve bool)
 	return &f, nil
 }
 
+// CancelShareRequest reverts the owner's own pending change. It is the reject
+// transition gated on ownership: only the feed's owner may cancel, and only
+// while the feed is pending.
+func (s *Postgres) CancelShareRequest(ctx context.Context, userID, feedID int64) (*Feed, error) {
+	row := s.pool.QueryRow(ctx,
+		`UPDATE feeds
+		 SET share_status = CASE share_requested WHEN 'shared' THEN 'private' ELSE 'shared' END,
+		     share_requested = NULL
+		 WHERE id = $1 AND user_id = $2 AND share_status = 'pending' AND share_requested IS NOT NULL
+		 RETURNING `+feedColumns,
+		feedID, userID,
+	)
+	var f Feed
+	if err := scanFeed(row, &f); err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("cancel share request: %w", err)
+	}
+	return &f, nil
+}
+
 // ListSharedFeeds returns the community directory of shared feeds.
 func (s *Postgres) ListSharedFeeds(ctx context.Context) ([]SharedFeed, error) {
 	rows, err := s.pool.Query(ctx,
@@ -1001,6 +1023,30 @@ func (s *Postgres) ResolveCollectionShare(ctx context.Context, collectionID int6
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("resolve collection share: %w", err)
+	}
+	c.VisibilityRequested = nullableString(req)
+	return &c, nil
+}
+
+// CancelCollectionVisibilityRequest reverts the owner's own pending change. It
+// is the reject transition gated on ownership: only the collection's owner may
+// cancel, and only while the collection is pending.
+func (s *Postgres) CancelCollectionVisibilityRequest(ctx context.Context, userID, collectionID int64) (*Collection, error) {
+	row := s.pool.QueryRow(ctx,
+		`UPDATE collections
+		 SET visibility_status = CASE visibility_requested WHEN 'public' THEN 'private' ELSE 'public' END,
+		     visibility_requested = NULL
+		 WHERE id = $1 AND user_id = $2 AND visibility_status = 'pending' AND visibility_requested IS NOT NULL
+		 RETURNING id, name, created_at, visibility_status, visibility_requested`,
+		collectionID, userID,
+	)
+	var c Collection
+	var req sql.NullString
+	if err := row.Scan(&c.ID, &c.Name, &c.CreatedAt, &c.VisibilityStatus, &req); err != nil {
+		if rowsAffectedZero(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("cancel collection visibility request: %w", err)
 	}
 	c.VisibilityRequested = nullableString(req)
 	return &c, nil

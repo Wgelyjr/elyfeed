@@ -214,6 +214,10 @@ type Store interface {
 	// Approving sets share_status to the requested target; rejecting sets it to
 	// the opposite. It returns ErrNotFound when the feed is not pending.
 	ResolveShare(ctx context.Context, feedID int64, approve bool) (*Feed, error)
+	// CancelShareRequest reverts the owner's own pending change back to the
+	// pre-request state. It returns ErrNotFound when the feed is not owned by
+	// userID or is not pending.
+	CancelShareRequest(ctx context.Context, userID, feedID int64) (*Feed, error)
 	// ListSharedFeeds returns the community directory of shared feeds.
 	ListSharedFeeds(ctx context.Context) ([]SharedFeed, error)
 
@@ -249,6 +253,10 @@ type Store interface {
 	// rejecting sets it to the opposite. It returns ErrNotFound when the
 	// collection is not pending.
 	ResolveCollectionShare(ctx context.Context, collectionID int64, approve bool) (*Collection, error)
+	// CancelCollectionVisibilityRequest reverts the owner's own pending
+	// visibility change back to the pre-request state. It returns ErrNotFound
+	// when the collection is not owned by userID or is not pending.
+	CancelCollectionVisibilityRequest(ctx context.Context, userID, collectionID int64) (*Collection, error)
 	// ListPublicCollections returns the community directory of public
 	// collections, each with the feed URLs it holds.
 	ListPublicCollections(ctx context.Context) ([]PublicCollection, error)

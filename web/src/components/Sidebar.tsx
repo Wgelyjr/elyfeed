@@ -38,6 +38,7 @@ interface Props {
   moderationPending: boolean;
   onRequestShare: (id: number) => void;
   onRequestUnshare: (id: number) => void;
+  onCancelShareRequest: (id: number) => void;
   sharePending: boolean;
   onCreateCollectionShare: (id: number) => void;
   collectionShare: { id: number; link: string } | null;
@@ -47,6 +48,7 @@ interface Props {
   importCollectionPending: boolean;
   onRequestCollectionPublic: (id: number) => void;
   onRequestCollectionPrivate: (id: number) => void;
+  onCancelCollectionVisibilityRequest: (id: number) => void;
   collectionVisibilityPending: boolean;
   // Admin queue for pending collection-visibility changes
   pendingCollectionShares: CollectionShareRequest[];
@@ -84,6 +86,7 @@ export default function Sidebar({
   moderationPending,
   onRequestShare,
   onRequestUnshare,
+  onCancelShareRequest,
   sharePending,
   onCreateCollectionShare,
   collectionShare,
@@ -92,6 +95,7 @@ export default function Sidebar({
   importCollectionPending,
   onRequestCollectionPublic,
   onRequestCollectionPrivate,
+  onCancelCollectionVisibilityRequest,
   collectionVisibilityPending,
   pendingCollectionShares,
   onApproveCollectionShare,
@@ -209,11 +213,11 @@ export default function Sidebar({
         return {
           label: 'pending',
           title:
-            f.share_requested === 'private'
+            (f.share_requested === 'private'
               ? 'Unpublishing awaits admin approval'
-              : 'Publishing awaits admin approval',
-          disabled: true,
-          onClick: () => {},
+              : 'Publishing awaits admin approval') + ' · Click to cancel',
+          disabled: false,
+          onClick: () => onCancelShareRequest(f.id),
         };
       default:
         return {
@@ -245,11 +249,11 @@ export default function Sidebar({
         return {
           label: 'pending',
           title:
-            c.visibility_requested === 'private'
+            (c.visibility_requested === 'private'
               ? 'Unpublishing awaits admin approval'
-              : 'Publishing awaits admin approval',
-          disabled: true,
-          onClick: () => {},
+              : 'Publishing awaits admin approval') + ' · Click to cancel',
+          disabled: false,
+          onClick: () => onCancelCollectionVisibilityRequest(c.id),
         };
       default:
         return {
