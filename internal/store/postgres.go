@@ -206,9 +206,13 @@ func (s *Postgres) SetFeedCollections(ctx context.Context, userID, feedID int64,
 		return fmt.Errorf("clear feed collections: %w", err)
 	}
 	if len(collectionIDs) > 0 {
-		ph := placeholders(len(collectionIDs))
+		// $1 = feed id, $2 = user id, $3.. = collection ids.
+		ph := make([]string, len(collectionIDs))
+		for i := range collectionIDs {
+			ph[i] = "$" + itoa(i+3)
+		}
 		sql := `INSERT INTO feed_collections (feed_id, collection_id)
-			 SELECT $1, id FROM collections WHERE user_id = $2 AND id IN (`+ph+`)
+			 SELECT $1, id FROM collections WHERE user_id = $2 AND id IN (`+strings.Join(ph, ",")+`)
 			 ON CONFLICT (feed_id, collection_id) DO NOTHING`
 		args := append([]any{feedID, userID}, toAny(collectionIDs)...)
 		if _, err := tx.Exec(ctx, sql, args...); err != nil {
