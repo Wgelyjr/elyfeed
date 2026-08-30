@@ -300,43 +300,45 @@ export default function App({ user, onLogout }: AppProps) {
                 ? selectedFeed.title
                 : 'All feeds'}
           </h1>
-          <div
-            className="read-filter"
-            role="group"
-            aria-label="Filter items by read state"
-          >
-            {READ_FILTERS.map(({ value, label }) => (
+          <div className="topbar-controls">
+            <div
+              className="read-filter"
+              role="group"
+              aria-label="Filter items by read state"
+            >
+              {READ_FILTERS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  className={readFilter === value ? 'active' : ''}
+                  aria-pressed={readFilter === value}
+                  onClick={() => setReadFilter(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="topbar-actions">
+              <span className="user-chip" title={user.email}>
+                {user.display_name || user.email}
+              </span>
               <button
-                key={value}
-                className={readFilter === value ? 'active' : ''}
-                aria-pressed={readFilter === value}
-                onClick={() => setReadFilter(value)}
+                className="btn small"
+                onClick={handleLogout}
+                disabled={loggingOut}
               >
-                {label}
+                {loggingOut ? '…' : 'Log out'}
               </button>
-            ))}
-          </div>
-          <div className="topbar-actions">
-            <span className="user-chip" title={user.email}>
-              {user.display_name || user.email}
-            </span>
-            <button
-              className="btn small"
-              onClick={handleLogout}
-              disabled={loggingOut}
-            >
-              {loggingOut ? '…' : 'Log out'}
-            </button>
-            <span className="unread-badge" title="Total unread items">
-              {unreadQuery.data ? unreadQuery.data.count : 0} unread
-            </span>
-            <button
-              className="btn"
-              onClick={() => refresh.mutate()}
-              disabled={refresh.isPending}
-            >
-              {refresh.isPending ? 'Refreshing…' : 'Refresh'}
-            </button>
+              <span className="unread-badge" title="Total unread items">
+                {unreadQuery.data ? unreadQuery.data.count : 0} unread
+              </span>
+              <button
+                className="btn"
+                onClick={() => refresh.mutate()}
+                disabled={refresh.isPending}
+              >
+                {refresh.isPending ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
           </div>
         </header>
 
