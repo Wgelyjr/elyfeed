@@ -113,16 +113,41 @@ Notes:
   `compose.yml` — and put a TLS-terminating reverse proxy in front (see
   [Security](#security)).
 
+## Deploy
+
+Deploys run through GitHub Actions (`.github/workflows/ci.yml`): a push to
+`main` builds and tests in the cloud, then runs `scripts/deploy.sh` on the
+production host through a self-hosted runner labeled `prod`. Pushing to
+`staging` does the same for the staging host (label `staging`), so changes
+land there first. Deploys only run after the test job passes; manual
+re-deploys are available from the Actions page (`workflow_dispatch`).
+
+Self-hosted runners are installed per host with:
+
+```sh
+RUNNER_TOKEN=<token> ./scripts/install-runner.sh <prod|staging>
+```
+
+where the one-time token comes from repo **Settings → Actions → Runners**.
+Run it as the deploy user (it needs `podman` access and the git deploy
+key); it installs to `/opt/elyfeed-runner` and registers a `github-runner-*`
+systemd service. The runner only needs outbound HTTPS — no inbound ports —
+so it works on LAN-only hosts. Once a CI deploy has landed, the old
+polling systemd service can be retired.
+
+The deploy scripts (run by the runner, or manually on the host) pull the
+branch, rebuild the image, and restart the stack — safe to run repeatedly.
+
 ## Staging
 
 A staging deployment of the `staging` branch runs on the `chesster` host at
-<http://10.55.1.13:2999>, kept up by the `elyfeed-staging.service` systemd
-unit. It is fully isolated from the production stack — separate checkout
-(`/opt/elyfeed-staging`), container names, image tag
+<http://10.55.1.13:2999>. It is fully isolated from the production stack —
+separate checkout (`/opt/elyfeed-staging`), container names, image tag
 (`localhost/elyfeed-staging:latest`), and data volume — via
 `compose.staging.yml`.
 
-To deploy changes to staging, on the host run:
+Pushing to the `staging` branch auto-deploys it (see [Deploy](#deploy)); on
+the host you can also run the script directly:
 
 ```sh
 cd /opt/elyfeed-staging && ./scripts/deploy-staging.sh

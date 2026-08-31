@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+  workflow_dispatch:
+
+jobs:
+  # Build + test in the cloud. The Postgres service lets the store
+  # integration tests run (they skip when DATABASE_URL is unset).
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: elyfeed
+          POSTGRES_PASSWORD: elyfeed
+          POSTGRES_DB: elyfeed
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U elyfeed -d elyfeed"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://elyfeed:elyfeed@localhost:5432/elyfeed?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: make build
+      - run: make vet
+      - run: make test
+
+  # Deploys run on a self-hosted runner on the target host (outbound
+  # connection only, no inbound ports needed). The runner must be labeled
+  # `staging` or `prod` respectively — see scripts/install-runner.sh.
+  deploy-staging:
+    needs: test
+    if: github.ref == 'refs/heads/staging'
+    runs-on: [self-hosted, linux, amd64, staging]
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    steps:
+      - name: Deploy staging
+        run: /opt/elyfeed-staging/scripts/deploy-staging.sh
+
+  deploy-prod:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, amd64, prod]
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    steps:
+      - name: Deploy production
+        run: /opt/elyfeed/scripts/deploy.sh

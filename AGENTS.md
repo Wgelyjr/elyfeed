@@ -1,7 +1,7 @@
 # AGENTS.md
 
 elyfeed: single-user RSS reader. Go + Postgres backend that also serves an
-embedded React (Vite + TS) PWA. No auth. Toolchain: Go 1.24+, Node 18+.
+embedded React (Vite + TS) PWA. Toolchain: Go 1.25+, Node 22 (Dockerfile).
 
 ## Build
 
@@ -35,6 +35,27 @@ make dev     # optional: Vite dev server with HMR, proxies /api to :8080
 
 ## Deploy
 
+Deploys go through GitHub Actions (`.github/workflows/ci.yml`): a push to
+`main` (or `staging`) builds and tests in the cloud, then runs the host's
+deploy script via a self-hosted runner labeled `prod` / `staging`. Deploys
+only run after the test job passes. Manual re-deploys: the Actions page
+(`workflow_dispatch`).
+
+- Runners: `RUNNER_TOKEN=<token> ./scripts/install-runner.sh <prod|staging>`
+  on each host (one-time token from repo Settings → Actions → Runners).
+  Run as the deploy user; it registers a `github-runner-*` systemd unit.
+  The `production` label is required for public repos — the script adds it.
+- Once a CI deploy has landed, the old polling systemd service can be
+  retired (`systemctl disable --now <unit>`).
+- Manual deploy (exactly what the runner runs):
+
+```sh
+# Production host:
+cd /opt/elyfeed && ./scripts/deploy.sh
+```
+
+Local stack commands:
+
 ```sh
 make up      # podman compose: builds image, starts db + app (app on host :8180)
 make logs    # follow app + db logs
@@ -48,15 +69,15 @@ make down    # stop/remove; data volume is preserved
 
 Staging runs the `staging` branch at http://10.55.1.13:2999, isolated from
 production via `compose.staging.yml` (own containers, image tag, and volume).
+Pushing to `staging` auto-deploys through the runner; manual deploy on the
+host:
 
 ```sh
-# On the staging host: pull the staging branch, rebuild, and redeploy.
 cd /opt/elyfeed-staging && ./scripts/deploy-staging.sh
 ```
 
 - `ELYFEED_DEV=true` there, so verification links print to `podman logs
   elyfeed-staging` instead of being emailed.
-- The stack is kept up by the `elyfeed-staging.service` systemd unit.
 - Never run `make up` / `podman compose up` in `/opt/elyfeed` (production)
   when targeting staging, and vice versa.
 
@@ -70,7 +91,9 @@ cd /opt/elyfeed-staging && ./scripts/deploy-staging.sh
   hard reload (or unregister the SW) before judging a running deploy.
 - Env config: `DATABASE_URL`, `HOST`, `PORT`, `REFRESH_INTERVAL`,
   `FEED_USER_AGENT` (see README).
-- No auth anywhere: never expose the port to untrusted networks.
+- Auth exists (password + SMTP, or OIDC) but there is no network-level
+  isolation: never expose the port directly to untrusted networks — put a
+  TLS-terminating reverse proxy in front (see README Security).
 - Commits: one-line imperative message; run `make build && make test` before
   committing.
 - Where things live: `internal/server` (HTTP + SPA serving), `internal/store`
