@@ -85,6 +85,11 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS, a *auth.Service) 
 	mux.HandleFunc("POST /api/auth/reset-password", s.handleResetPassword)
 	mux.HandleFunc("GET /api/auth/oidc", s.handleOIDCLogin)
 	mux.HandleFunc("GET /api/auth/oidc/callback", s.handleOIDCCallback)
+	mux.HandleFunc("GET /api", func(w http.ResponseWriter, r *http.Request) {
+		// Explicit redirect: ServeMux's automatic trailing-slash redirect
+		// changed status code between Go versions (301 -> 307 in 1.26).
+		http.Redirect(w, r, "/api/", http.StatusTemporaryRedirect)
+	})
 	mux.HandleFunc("GET /api/", s.handleAPIIndex)
 	mux.Handle("GET /", spaHandler{assets: assets})
 
