@@ -455,6 +455,17 @@ body {
   color: var(--error-text);
 }
 
+/* Armed (awaiting second confirming tap) row-action buttons */
+.icon-btn.confirm {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.icon-btn.danger.confirm {
+  background: var(--error-text);
+  color: var(--panel);
+}
+
 /* Bulk add */
 .bulk-toggle {
   padding: 0.25rem 1rem 0.25rem;

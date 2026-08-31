@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type {
   Collection,
   CollectionShareRequest,
@@ -118,6 +118,37 @@ export default function Sidebar({
     number | null
   >(null);
   const [renameName, setRenameName] = useState('');
+
+  // Rename/delete are two-tap: the first tap arms the button, the second
+  // confirms, so a stray tap on a row can't rename or delete a collection.
+  const [armedAction, setArmedAction] = useState<{
+    id: number;
+    action: 'rename' | 'delete';
+  } | null>(null);
+  const armTimer = useRef<number | null>(null);
+  function arm(c: Collection, action: 'rename' | 'delete') {
+    if (armTimer.current) window.clearTimeout(armTimer.current);
+    setArmedAction({ id: c.id, action });
+    armTimer.current = window.setTimeout(() => setArmedAction(null), 4000);
+  }
+  function disarm() {
+    if (armTimer.current) window.clearTimeout(armTimer.current);
+    setArmedAction(null);
+  }
+  useEffect(() => {
+    if (!armedAction) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setArmedAction(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [armedAction]);
+  useEffect(
+    () => () => {
+      if (armTimer.current) window.clearTimeout(armTimer.current);
+    },
+    [],
+  );
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -400,7 +431,10 @@ export default function Sidebar({
                       ? 'nav-item active'
                       : 'nav-item'
                   }
-                  onClick={() => onSelectCollection(c.id)}
+                  onClick={() => {
+                    disarm();
+                    onSelectCollection(c.id);
+                  }}
                   title={c.name}
                 >
                   <span className="nav-label">{c.name}</span>
@@ -436,24 +470,62 @@ export default function Sidebar({
                   >
                     {collectionShare?.id === c.id ? '✓' : '⤴'}
                   </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    onClick={() => startRename(c)}
-                    title="Rename collection"
-                    aria-label={`Rename ${c.name}`}
-                  >
-                    ✎
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn danger"
-                    onClick={() => onDeleteCollection(c.id)}
-                    title="Delete collection"
-                    aria-label={`Delete ${c.name}`}
-                  >
-                    ×
-                  </button>
+                  {(() => {
+                    const armed =
+                      armedAction?.id === c.id &&
+                      armedAction.action === 'rename';
+                    return (
+                      <button
+                        type="button"
+                        className={armed ? 'icon-btn confirm' : 'icon-btn'}
+                        onClick={() => {
+                          if (armed) {
+                            disarm();
+                            startRename(c);
+                          } else {
+                            arm(c, 'rename');
+                          }
+                        }}
+                        title={
+                          armed
+                            ? `Click again to rename ${c.name}`
+                            : 'Rename collection (click twice to confirm)'
+                        }
+                        aria-label={`Rename ${c.name}`}
+                      >
+                        ✎
+                      </button>
+                    );
+                  })()}
+                  {(() => {
+                    const armed =
+                      armedAction?.id === c.id &&
+                      armedAction.action === 'delete';
+                    return (
+                      <button
+                        type="button"
+                        className={
+                          armed ? 'icon-btn danger confirm' : 'icon-btn danger'
+                        }
+                        onClick={() => {
+                          if (armed) {
+                            disarm();
+                            onDeleteCollection(c.id);
+                          } else {
+                            arm(c, 'delete');
+                          }
+                        }}
+                        title={
+                          armed
+                            ? `Click again to delete ${c.name}`
+                            : 'Delete collection (click twice to confirm)'
+                        }
+                        aria-label={`Delete ${c.name}`}
+                      >
+                        {armed ? '✓' : '×'}
+                      </button>
+                    );
+                  })()}
                 </div>
               </div>
             ),
