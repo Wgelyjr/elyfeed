@@ -24,32 +24,6 @@ type Feed struct {
 	LastFetched   *time.Time `json:"last_fetched"`
 	CreatedAt     time.Time  `json:"created_at"`
 	CollectionIDs []int64    `json:"collection_ids"`
-	// ShareStatus is one of "private", "pending", or "shared". A feed is
-	// private unless its owner requests to share it; sharing then waits for
-	// admin approval (pending) before it appears in the community directory.
-	ShareStatus string `json:"share_status"`
-	// ShareRequested is the owner's intended target ("shared" or "private")
-	// while a change is pending review; nil unless ShareStatus is "pending".
-	ShareRequested *string `json:"share_requested"`
-}
-
-// SharedFeed is an entry in the community directory of shared feeds.
-type SharedFeed struct {
-	URL       string `json:"url"`
-	Title     string `json:"title"`
-	SiteURL   string `json:"site_url"`
-	OwnerName string `json:"owner_name"`
-}
-
-// ShareRequest is a pending feed-sharing change awaiting admin review.
-type ShareRequest struct {
-	FeedID     int64  `json:"feed_id"`
-	URL        string `json:"url"`
-	Title      string `json:"title"`
-	OwnerID    int64  `json:"owner_id"`
-	OwnerName  string `json:"owner_name"`
-	OwnerEmail string `json:"owner_email"`
-	Requested  string `json:"requested"`
 }
 
 // RecommendedFeed is an admin-curated starter feed shown during onboarding.
@@ -199,27 +173,6 @@ type Store interface {
 	// without removing existing memberships. Feeds or a collection not owned by
 	// the user are ignored; it reports how many new links were created.
 	AddFeedsToCollection(ctx context.Context, userID int64, collectionID int64, feedIDs []int64) (int, error)
-
-	// Feed sharing. A user requests a change (want is "shared" to publish or
-	// "private" to unpublish); the change lands as pending and only takes
-	// effect once an admin resolves it.
-	// SetShareRequest moves a feed to pending with the given target. want must
-	// be "shared" (from a private feed) or "private" (from a shared feed); it
-	// returns ErrNotFound for a feed the user does not own and an error when
-	// the feed is already in the target or pending state.
-	SetShareRequest(ctx context.Context, userID, feedID int64, want string) (*Feed, error)
-	// ListPendingShares returns every feed whose sharing change awaits review.
-	ListPendingShares(ctx context.Context) ([]ShareRequest, error)
-	// ResolveShare applies (approve) or reverts (reject) a pending change.
-	// Approving sets share_status to the requested target; rejecting sets it to
-	// the opposite. It returns ErrNotFound when the feed is not pending.
-	ResolveShare(ctx context.Context, feedID int64, approve bool) (*Feed, error)
-	// CancelShareRequest reverts the owner's own pending change back to the
-	// pre-request state. It returns ErrNotFound when the feed is not owned by
-	// userID or is not pending.
-	CancelShareRequest(ctx context.Context, userID, feedID int64) (*Feed, error)
-	// ListSharedFeeds returns the community directory of shared feeds.
-	ListSharedFeeds(ctx context.Context) ([]SharedFeed, error)
 
 	// Collections
 	CreateCollection(ctx context.Context, userID int64, name string) (*Collection, error)

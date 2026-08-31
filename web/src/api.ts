@@ -9,8 +9,6 @@ import type {
   ItemsResponse,
   PublicCollection,
   RecommendedFeed,
-  ShareRequest,
-  SharedFeed,
   UnreadCountResponse,
   User,
 } from './types';
@@ -116,28 +114,6 @@ export const api = {
 
   deleteCollection: (id: number): Promise<{ ok: boolean }> =>
     request<{ ok: boolean }>(`/api/collections/${id}`, { method: 'DELETE' }),
-
-  // Sharing: request to publish/unpublish a feed (admin review required).
-  requestShare: (id: number): Promise<Feed> =>
-    request<Feed>(`/api/feeds/${id}/share`, { method: 'POST' }),
-
-  requestUnshare: (id: number): Promise<Feed> =>
-    request<Feed>(`/api/feeds/${id}/unshare`, { method: 'POST' }),
-
-  cancelShareRequest: (id: number): Promise<Feed> =>
-    request<Feed>(`/api/feeds/${id}/cancel-share`, { method: 'POST' }),
-
-  listSharedFeeds: (): Promise<SharedFeed[]> =>
-    request<SharedFeed[]>('/api/shared-feeds'),
-
-  listPendingShares: (): Promise<ShareRequest[]> =>
-    request<ShareRequest[]>('/api/shared-feeds/pending'),
-
-  approveShare: (id: number): Promise<Feed> =>
-    request<Feed>(`/api/shared-feeds/${id}/approve`, { method: 'POST' }),
-
-  rejectShare: (id: number): Promise<Feed> =>
-    request<Feed>(`/api/shared-feeds/${id}/reject`, { method: 'POST' }),
 
   listRecommendedFeeds: (): Promise<RecommendedFeed[]> =>
     request<RecommendedFeed[]>('/api/recommended-feeds'),

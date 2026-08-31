@@ -4,8 +4,6 @@ import type {
   CollectionShareRequest,
   Feed,
   PublicCollection,
-  ShareRequest,
-  SharedFeed,
 } from '../types';
 
 interface Props {
@@ -29,17 +27,7 @@ interface Props {
   onRenameCollection: (id: number, name: string) => void;
   onDeleteCollection: (id: number) => void;
   collectionPending: boolean;
-  // Sharing / discovery
-  sharedFeeds: SharedFeed[];
-  onAddSharedFeed: (url: string) => void;
-  pendingShares: ShareRequest[];
-  onApproveShare: (id: number) => void;
-  onRejectShare: (id: number) => void;
-  moderationPending: boolean;
-  onRequestShare: (id: number) => void;
-  onRequestUnshare: (id: number) => void;
-  onCancelShareRequest: (id: number) => void;
-  sharePending: boolean;
+  // Shareable collections
   onCreateCollectionShare: (id: number) => void;
   collectionShare: { id: number; link: string } | null;
   // Public/private collection visibility + community directory
@@ -78,16 +66,6 @@ export default function Sidebar({
   onRenameCollection,
   onDeleteCollection,
   collectionPending,
-  sharedFeeds,
-  onAddSharedFeed,
-  pendingShares,
-  onApproveShare,
-  onRejectShare,
-  moderationPending,
-  onRequestShare,
-  onRequestUnshare,
-  onCancelShareRequest,
-  sharePending,
   onCreateCollectionShare,
   collectionShare,
   publicCollections,
@@ -220,44 +198,6 @@ export default function Sidebar({
     onRenameCollection(renamingCollectionId, name);
     setRenamingCollectionId(null);
     setRenameName('');
-  }
-
-  // The user's own feed URLs, so the shared directory can mark "Added".
-  const addedUrls = new Set(feeds.map((f) => f.url));
-
-  // Describes the share-state pill for one of the user's feeds.
-  function shareMeta(f: Feed): {
-    label: string;
-    title: string;
-    disabled: boolean;
-    onClick: () => void;
-  } {
-    switch (f.share_status) {
-      case 'shared':
-        return {
-          label: 'shared',
-          title: 'Shared with the community. Click to request unpublishing.',
-          disabled: false,
-          onClick: () => onRequestUnshare(f.id),
-        };
-      case 'pending':
-        return {
-          label: 'pending',
-          title:
-            (f.share_requested === 'private'
-              ? 'Unpublishing awaits admin approval'
-              : 'Publishing awaits admin approval') + ' · Click to cancel',
-          disabled: false,
-          onClick: () => onCancelShareRequest(f.id),
-        };
-      default:
-        return {
-          label: 'private',
-          title: 'Click to share with the community (needs admin approval)',
-          disabled: false,
-          onClick: () => onRequestShare(f.id),
-        };
-    }
   }
 
   // Describes the visibility pill for one of the user's collections.
@@ -601,21 +541,6 @@ export default function Sidebar({
                   >
                     {f.title || f.url}
                   </button>
-                  {(() => {
-                    const m = shareMeta(f);
-                    return (
-                      <button
-                        type="button"
-                        className={`share-pill ${f.share_status}`}
-                        onClick={m.onClick}
-                        title={m.title}
-                        aria-label={`${m.label} — ${f.title || f.url}`}
-                        disabled={m.disabled || sharePending}
-                      >
-                        {m.label}
-                      </button>
-                    );
-                  })()}
                   <button
                     type="button"
                     className="icon-btn"
@@ -659,36 +584,6 @@ export default function Sidebar({
         </nav>
       </section>
 
-      {/* Shared feeds: community directory of approved shared feeds */}
-      <section className="side-section">
-        <div className="section-head">
-          <span className="section-title">Shared Feeds</span>
-        </div>
-        <div className="shared-list">
-          {sharedFeeds.map((f) => {
-            const added = addedUrls.has(f.url);
-            return (
-              <div className="shared-row" key={f.url}>
-                <span className="feed-title" title={f.url}>
-                  {f.title || f.url}
-                </span>
-                <button
-                  type="button"
-                  className="btn tiny"
-                  onClick={() => onAddSharedFeed(f.url)}
-                  disabled={added || addPending}
-                >
-                  {added ? 'Added' : 'Add'}
-                </button>
-              </div>
-            );
-          })}
-          {sharedFeeds.length === 0 && (
-            <div className="muted small pad-x">No shared feeds yet.</div>
-          )}
-        </div>
-      </section>
-
       {/* Public collections: community directory (one-click import) */}
       <section className="side-section">
         <div className="section-head">
@@ -722,50 +617,14 @@ export default function Sidebar({
         </div>
       </section>
 
-      {/* Admin moderation queue for pending feed + collection changes */}
-      {pendingShares.length > 0 || pendingCollectionShares.length > 0 ? (
+      {/* Admin moderation queue for pending collection visibility changes */}
+      {pendingCollectionShares.length > 0 ? (
         <section className="side-section moderation">
           <div className="section-head">
             <span className="section-title">Approval queue</span>
-            <span className="count">
-              {pendingShares.length + pendingCollectionShares.length}
-            </span>
+            <span className="count">{pendingCollectionShares.length}</span>
           </div>
           <div className="mod-list">
-            {pendingShares.map((p) => (
-              <div className="mod-row" key={`feed-${p.feed_id}`}>
-                <div className="mod-info">
-                  <span className="feed-title" title={p.url}>
-                    {p.title || p.url}
-                  </span>
-                  <span className="mod-meta">
-                    feed ·{' '}
-                    {p.requested === 'shared'
-                      ? 'wants to publish'
-                      : 'wants to unpublish'}{' '}
-                    · {p.owner_email}
-                  </span>
-                </div>
-                <div className="mod-actions">
-                  <button
-                    type="button"
-                    className="btn tiny"
-                    onClick={() => onApproveShare(p.feed_id)}
-                    disabled={moderationPending}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    className="btn tiny danger"
-                    onClick={() => onRejectShare(p.feed_id)}
-                    disabled={moderationPending}
-                  >
-                    Reject
-                  </button>
-                </div>
-              </div>
-            ))}
             {pendingCollectionShares.map((p) => (
               <div className="mod-row" key={`coll-${p.collection_id}`}>
                 <div className="mod-info">

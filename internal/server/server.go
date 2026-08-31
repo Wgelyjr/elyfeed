@@ -67,13 +67,6 @@ func New(st store.Store, ref *refresh.Refresher, assets fs.FS, a *auth.Service) 
 	mux.HandleFunc("GET /api/public-collections/pending", s.handleListPendingCollectionShares)
 	mux.HandleFunc("POST /api/public-collections/{id}/approve", s.handleApproveCollectionShare)
 	mux.HandleFunc("POST /api/public-collections/{id}/reject", s.handleRejectCollectionShare)
-	mux.HandleFunc("POST /api/feeds/{id}/share", s.handleRequestShare)
-	mux.HandleFunc("POST /api/feeds/{id}/unshare", s.handleRequestUnshare)
-	mux.HandleFunc("GET /api/shared-feeds", s.handleListSharedFeeds)
-	mux.HandleFunc("GET /api/shared-feeds/pending", s.handleListPendingShares)
-	mux.HandleFunc("POST /api/shared-feeds/{id}/approve", s.handleApproveShare)
-	mux.HandleFunc("POST /api/shared-feeds/{id}/reject", s.handleRejectShare)
-	mux.HandleFunc("POST /api/feeds/{id}/cancel-share", s.handleCancelShareRequest)
 	mux.HandleFunc("GET /api/recommended-feeds", s.handleListRecommendedFeeds)
 	mux.HandleFunc("POST /api/recommended-feeds", s.handleCreateRecommendedFeed)
 	mux.HandleFunc("DELETE /api/recommended-feeds/{id}", s.handleDeleteRecommendedFeed)
@@ -371,125 +364,6 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// --- sharing ---
-
-// handleRequestShare marks the user's private feed as pending-share.
-func (s *Server) handleRequestShare(w http.ResponseWriter, r *http.Request) {
-	s.setShareRequest(w, r, "shared")
-}
-
-// handleRequestUnshare marks the user's shared feed as pending-unshare.
-func (s *Server) handleRequestUnshare(w http.ResponseWriter, r *http.Request) {
-	s.setShareRequest(w, r, "private")
-}
-
-func (s *Server) setShareRequest(w http.ResponseWriter, r *http.Request, want string) {
-	userID, ok := s.currentUser(r)
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "authentication required")
-		return
-	}
-	id, ok := parseID(w, r.PathValue("id"))
-	if !ok {
-		return
-	}
-	feed, err := s.store.SetShareRequest(r.Context(), userID, id, want)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "feed not found")
-			return
-		}
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, feed)
-}
-
-// handleListSharedFeeds is the community directory of shared feeds.
-func (s *Server) handleListSharedFeeds(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.currentUser(r); !ok {
-		writeError(w, http.StatusUnauthorized, "authentication required")
-		return
-	}
-	feeds, err := s.store.ListSharedFeeds(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if feeds == nil {
-		feeds = []store.SharedFeed{}
-	}
-	writeJSON(w, http.StatusOK, feeds)
-}
-
-// handleListPendingShares returns the admin queue of pending share changes.
-func (s *Server) handleListPendingShares(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
-	reqs, err := s.store.ListPendingShares(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if reqs == nil {
-		reqs = []store.ShareRequest{}
-	}
-	writeJSON(w, http.StatusOK, reqs)
-}
-
-func (s *Server) handleApproveShare(w http.ResponseWriter, r *http.Request) {
-	s.resolveShare(w, r, true)
-}
-
-func (s *Server) handleRejectShare(w http.ResponseWriter, r *http.Request) {
-	s.resolveShare(w, r, false)
-}
-
-func (s *Server) resolveShare(w http.ResponseWriter, r *http.Request, approve bool) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
-	id, ok := parseID(w, r.PathValue("id"))
-	if !ok {
-		return
-	}
-	feed, err := s.store.ResolveShare(r.Context(), id, approve)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "no pending change for this feed")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, feed)
-}
-
-// handleCancelShareRequest lets the owner withdraw their own pending share
-// change, reverting the feed to its pre-request state.
-func (s *Server) handleCancelShareRequest(w http.ResponseWriter, r *http.Request) {
-	userID, ok := s.currentUser(r)
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "authentication required")
-		return
-	}
-	id, ok := parseID(w, r.PathValue("id"))
-	if !ok {
-		return
-	}
-	feed, err := s.store.CancelShareRequest(r.Context(), userID, id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "no pending change for this feed")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, feed)
 }
 
 // --- recommended feeds ---
@@ -1129,13 +1003,6 @@ var apiEndpoints = []struct {
 	{"GET", "/api/public-collections/pending", "Pending collection visibility changes awaiting admin review", true},
 	{"POST", "/api/public-collections/{id}/approve", "Approve a pending collection visibility change", true},
 	{"POST", "/api/public-collections/{id}/reject", "Reject a pending collection visibility change", true},
-	{"POST", "/api/feeds/{id}/share", "Request to publish a feed (moves it to pending admin review)", true},
-	{"POST", "/api/feeds/{id}/unshare", "Request to unpublish a feed (moves it to pending admin review)", true},
-	{"POST", "/api/feeds/{id}/cancel-share", "Cancel your own pending share change (reverts to pre-request state)", true},
-	{"GET", "/api/shared-feeds", "Community directory of shared feeds", true},
-	{"GET", "/api/shared-feeds/pending", "Pending share changes awaiting admin review", true},
-	{"POST", "/api/shared-feeds/{id}/approve", "Approve a pending share change", true},
-	{"POST", "/api/shared-feeds/{id}/reject", "Reject a pending share change", true},
 	{"GET", "/api/recommended-feeds", "Admin-curated starter feeds shown during onboarding", true},
 	{"POST", "/api/recommended-feeds", "Add (or update) a recommended feed, body {\"url\": \"...\", \"title\": \"...\", \"site_url\": \"...\"}", true},
 	{"DELETE", "/api/recommended-feeds/{id}", "Remove a recommended feed", true},

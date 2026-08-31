@@ -97,26 +97,6 @@ func (m *stubStore) AddFeedsToCollection(context.Context, int64, int64, []int64)
 	return 0, nil
 }
 
-func (m *stubStore) SetShareRequest(context.Context, int64, int64, string) (*store.Feed, error) {
-	return nil, store.ErrNotFound
-}
-
-func (m *stubStore) ListPendingShares(context.Context) ([]store.ShareRequest, error) {
-	return []store.ShareRequest{}, nil
-}
-
-func (m *stubStore) ResolveShare(context.Context, int64, bool) (*store.Feed, error) {
-	return nil, store.ErrNotFound
-}
-
-func (m *stubStore) CancelShareRequest(context.Context, int64, int64) (*store.Feed, error) {
-	return nil, store.ErrNotFound
-}
-
-func (m *stubStore) ListSharedFeeds(context.Context) ([]store.SharedFeed, error) {
-	return []store.SharedFeed{}, nil
-}
-
 func (m *stubStore) CreateCollectionShare(context.Context, int64, int64, string) error {
 	return nil
 }

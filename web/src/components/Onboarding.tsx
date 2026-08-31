@@ -3,9 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 
 // First-run experience for a brand-new account (no feeds yet). It offers the
-// admin-curated recommendations, the community shared-feed directory, direct
-// URL add, and import of a shared collection. Adding a feed (or importing)
-// flips the app out of onboarding because the parent watches the feed count.
+// admin-curated recommendations, the public collections directory, direct URL
+// add, and import of a shared collection. Adding a feed (or importing) flips
+// the app out of onboarding because the parent watches the feed count.
 interface Props {
   onDismiss: () => void;
 }
@@ -31,10 +31,6 @@ export default function Onboarding({ onDismiss }: Props) {
   const recommendedQuery = useQuery({
     queryKey: ['recommended-feeds'],
     queryFn: api.listRecommendedFeeds,
-  });
-  const sharedQuery = useQuery({
-    queryKey: ['shared-feeds'],
-    queryFn: api.listSharedFeeds,
   });
   const publicCollectionsQuery = useQuery({
     queryKey: ['public-collections'],
@@ -94,8 +90,8 @@ export default function Onboarding({ onDismiss }: Props) {
         <div className="onboard-brand">elyfeed</div>
         <h2>Welcome to elyfeed</h2>
         <p className="onboard-sub">
-          Add a feed by URL, pick from the recommendations, browse what the
-          community has shared, or import a shared collection.
+          Add a feed by URL, pick from the recommendations, browse the public
+          collections, or import a shared collection.
         </p>
 
         <form className="onboard-add" onSubmit={submitUrl}>
@@ -137,29 +133,6 @@ export default function Onboarding({ onDismiss }: Props) {
               (recommendedQuery.data?.length ?? 0) === 0 && (
                 <li className="muted small">No recommended feeds yet.</li>
               )}
-          </ul>
-        </section>
-
-        <section className="onboard-section">
-          <h3>Shared by the community</h3>
-          <ul className="onboard-list">
-            {sharedQuery.data?.map((f) => (
-              <li key={f.url} className="onboard-row">
-                <span className="onboard-feed-title" title={f.url}>
-                  {f.title || f.url}
-                </span>
-                <button
-                  className="btn tiny"
-                  disabled={addFeed.isPending}
-                  onClick={() => addFeed.mutate(f.url)}
-                >
-                  Add
-                </button>
-              </li>
-            ))}
-            {!sharedQuery.isLoading && (sharedQuery.data?.length ?? 0) === 0 && (
-              <li className="muted small">No shared feeds yet.</li>
-            )}
           </ul>
         </section>
 

@@ -228,18 +228,6 @@ export default function App({ user, onLogout }: AppProps) {
 
   const isAdmin = user.role === 'admin';
 
-  // Community shared-feed directory (sidebar) and the admin moderation queue.
-  const sharedFeedsQuery = useQuery({
-    queryKey: ['shared-feeds'],
-    queryFn: api.listSharedFeeds,
-  });
-  const pendingSharesQuery = useQuery({
-    queryKey: ['pending-shares'],
-    queryFn: api.listPendingShares,
-    enabled: isAdmin,
-    refetchInterval: 30_000,
-  });
-
   // Community directory of public collections (one-click import).
   const publicCollectionsQuery = useQuery({
     queryKey: ['public-collections'],
@@ -250,35 +238,6 @@ export default function App({ user, onLogout }: AppProps) {
     queryFn: api.listPendingCollectionShares,
     enabled: isAdmin,
     refetchInterval: 30_000,
-  });
-
-  const requestShare = useMutation({
-    mutationFn: (id: number) => api.requestShare(id),
-    onSuccess: invalidateAll,
-  });
-  const requestUnshare = useMutation({
-    mutationFn: (id: number) => api.requestUnshare(id),
-    onSuccess: invalidateAll,
-  });
-  const cancelShareRequest = useMutation({
-    mutationFn: (id: number) => api.cancelShareRequest(id),
-    onSuccess: invalidateAll,
-  });
-  const approveShare = useMutation({
-    mutationFn: (id: number) => api.approveShare(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['feeds'] });
-      queryClient.invalidateQueries({ queryKey: ['shared-feeds'] });
-      queryClient.invalidateQueries({ queryKey: ['pending-shares'] });
-    },
-  });
-  const rejectShare = useMutation({
-    mutationFn: (id: number) => api.rejectShare(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['feeds'] });
-      queryClient.invalidateQueries({ queryKey: ['shared-feeds'] });
-      queryClient.invalidateQueries({ queryKey: ['pending-shares'] });
-    },
   });
 
   // Public/private collection visibility (admin review) + import by id.
@@ -412,20 +371,6 @@ export default function App({ user, onLogout }: AppProps) {
           createCollection.isPending ||
           renameCollection.isPending ||
           deleteCollection.isPending
-        }
-        sharedFeeds={sharedFeedsQuery.data ?? []}
-        onAddSharedFeed={(url) => addFeed.mutate(url)}
-        pendingShares={pendingSharesQuery.data ?? []}
-        onApproveShare={(id) => approveShare.mutate(id)}
-        onRejectShare={(id) => rejectShare.mutate(id)}
-        moderationPending={approveShare.isPending || rejectShare.isPending}
-        onRequestShare={(id) => requestShare.mutate(id)}
-        onRequestUnshare={(id) => requestUnshare.mutate(id)}
-        onCancelShareRequest={(id) => cancelShareRequest.mutate(id)}
-        sharePending={
-          requestShare.isPending ||
-          requestUnshare.isPending ||
-          cancelShareRequest.isPending
         }
         onCreateCollectionShare={(id) => createCollectionShare.mutate(id)}
         collectionShare={collectionShare}

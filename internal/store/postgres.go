@@ -25,23 +25,12 @@ func NewPostgres(pool *pgxpool.Pool) *Postgres {
 	return &Postgres{pool: pool}
 }
 
-// feedColumns is the SELECT/RETURNING column list for a full feed row,
-// including its sharing state.
-const feedColumns = `id, user_id, url, title, site_url, last_fetched, created_at, share_status, share_requested`
+// feedColumns is the SELECT/RETURNING column list for a full feed row.
+const feedColumns = `id, user_id, url, title, site_url, last_fetched, created_at`
 
-// scanFeed scans a full feed row (see feedColumns); share_requested is NULL
-// unless the feed is pending.
+// scanFeed scans a full feed row (see feedColumns).
 func scanFeed(s rowScanner, f *Feed) error {
-	var req sql.NullString
-	if err := s.Scan(&f.ID, &f.UserID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt, &f.ShareStatus, &req); err != nil {
-		return err
-	}
-	if req.Valid {
-		f.ShareRequested = &req.String
-	} else {
-		f.ShareRequested = nil
-	}
-	return nil
+	return s.Scan(&f.ID, &f.UserID, &f.URL, &f.Title, &f.SiteURL, &f.LastFetched, &f.CreatedAt)
 }
 
 // nullableString converts a scanned NULL-able string column to a pointer (nil
@@ -246,145 +235,6 @@ func (s *Postgres) AddFeedsToCollection(ctx context.Context, userID int64, colle
 		return 0, fmt.Errorf("add feeds to collection: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
-}
-
-// --- feed sharing ---
-
-// SetShareRequest moves a feed to pending with the given target ("shared" from
-// a private feed, "private" from a shared feed).
-func (s *Postgres) SetShareRequest(ctx context.Context, userID, feedID int64, want string) (*Feed, error) {
-	var from, to string
-	switch want {
-	case "shared":
-		from, to = "private", "shared"
-	case "private":
-		from, to = "shared", "private"
-	default:
-		return nil, fmt.Errorf("invalid share target %q", want)
-	}
-
-	row := s.pool.QueryRow(ctx,
-		`UPDATE feeds
-		 SET share_status = 'pending', share_requested = $4
-		 WHERE id = $1 AND user_id = $2 AND share_status = $3
-		 RETURNING `+feedColumns,
-		feedID, userID, from, to,
-	)
-	var f Feed
-	if err := scanFeed(row, &f); err != nil {
-		if rowsAffectedZero(err) {
-			// Distinguish "not owned" from "already in another state".
-			var cur string
-			if err := s.pool.QueryRow(ctx,
-				`SELECT share_status FROM feeds WHERE id = $1 AND user_id = $2`, feedID, userID,
-			).Scan(&cur); err != nil {
-				if rowsAffectedZero(err) {
-					return nil, ErrNotFound
-				}
-				return nil, fmt.Errorf("get share state: %w", err)
-			}
-			return nil, fmt.Errorf("feed is currently %s", cur)
-		}
-		return nil, fmt.Errorf("set share request: %w", err)
-	}
-	return &f, nil
-}
-
-// ListPendingShares returns every feed whose sharing change awaits review.
-func (s *Postgres) ListPendingShares(ctx context.Context) ([]ShareRequest, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT f.id, f.url, f.title, f.share_requested, u.id, u.display_name, u.email
-		 FROM feeds f JOIN users u ON u.id = f.user_id
-		 WHERE f.share_status = 'pending'
-		 ORDER BY f.title ASC, f.id ASC`)
-	if err != nil {
-		return nil, fmt.Errorf("list pending shares: %w", err)
-	}
-	defer rows.Close()
-
-	out := make([]ShareRequest, 0)
-	for rows.Next() {
-		var r ShareRequest
-		if err := rows.Scan(&r.FeedID, &r.URL, &r.Title, &r.Requested, &r.OwnerID, &r.OwnerName, &r.OwnerEmail); err != nil {
-			return nil, fmt.Errorf("scan pending share: %w", err)
-		}
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending shares: %w", err)
-	}
-	return out, nil
-}
-
-// ResolveShare applies (approve) or reverts (reject) a pending change.
-func (s *Postgres) ResolveShare(ctx context.Context, feedID int64, approve bool) (*Feed, error) {
-	set := `SET share_status = share_requested, share_requested = NULL`
-	if !approve {
-		set = `SET share_status = CASE share_requested WHEN 'shared' THEN 'private' ELSE 'shared' END,
-		       share_requested = NULL`
-	}
-	row := s.pool.QueryRow(ctx,
-		`UPDATE feeds `+set+`
-		 WHERE id = $1 AND share_status = 'pending' AND share_requested IS NOT NULL
-		 RETURNING `+feedColumns,
-		feedID,
-	)
-	var f Feed
-	if err := scanFeed(row, &f); err != nil {
-		if rowsAffectedZero(err) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("resolve share: %w", err)
-	}
-	return &f, nil
-}
-
-// CancelShareRequest reverts the owner's own pending change. It is the reject
-// transition gated on ownership: only the feed's owner may cancel, and only
-// while the feed is pending.
-func (s *Postgres) CancelShareRequest(ctx context.Context, userID, feedID int64) (*Feed, error) {
-	row := s.pool.QueryRow(ctx,
-		`UPDATE feeds
-		 SET share_status = CASE share_requested WHEN 'shared' THEN 'private' ELSE 'shared' END,
-		     share_requested = NULL
-		 WHERE id = $1 AND user_id = $2 AND share_status = 'pending' AND share_requested IS NOT NULL
-		 RETURNING `+feedColumns,
-		feedID, userID,
-	)
-	var f Feed
-	if err := scanFeed(row, &f); err != nil {
-		if rowsAffectedZero(err) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("cancel share request: %w", err)
-	}
-	return &f, nil
-}
-
-// ListSharedFeeds returns the community directory of shared feeds.
-func (s *Postgres) ListSharedFeeds(ctx context.Context) ([]SharedFeed, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT f.url, f.title, f.site_url, u.display_name
-		 FROM feeds f JOIN users u ON u.id = f.user_id
-		 WHERE f.share_status = 'shared'
-		 ORDER BY f.title ASC, f.id ASC`)
-	if err != nil {
-		return nil, fmt.Errorf("list shared feeds: %w", err)
-	}
-	defer rows.Close()
-
-	out := make([]SharedFeed, 0)
-	for rows.Next() {
-		var sf SharedFeed
-		if err := rows.Scan(&sf.URL, &sf.Title, &sf.SiteURL, &sf.OwnerName); err != nil {
-			return nil, fmt.Errorf("scan shared feed: %w", err)
-		}
-		out = append(out, sf)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate shared feeds: %w", err)
-	}
-	return out, nil
 }
 
 func (s *Postgres) TouchFeed(ctx context.Context, userID, id int64) error {

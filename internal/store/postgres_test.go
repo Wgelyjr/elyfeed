@@ -213,61 +213,6 @@ func TestAddFeedsToCollection(t *testing.T) {
 	}
 }
 
-// TestFeedSharingLifecycle walks a feed through its sharing states, verifying
-// the owner can cancel their own pending change back to the prior state.
-func TestFeedSharingLifecycle(t *testing.T) {
-	st := requireTestStore(t)
-	ctx := context.Background()
-	user := newTestUser(t, st)
-	other := newTestUser(t, st)
-	f, _ := st.CreateFeed(ctx, user, "https://example.com/share.xml", "Shared Feed", "")
-
-	// private -> request to share -> pending.
-	got, err := st.SetShareRequest(ctx, user, f.ID, "shared")
-	if err != nil {
-		t.Fatalf("request share: %v", err)
-	}
-	if got.ShareStatus != "pending" || got.ShareRequested == nil || *got.ShareRequested != "shared" {
-		t.Fatalf("after request = (%q,%v), want (pending, shared)", got.ShareStatus, got.ShareRequested)
-	}
-
-	// Owner cancels their own pending request -> back to private.
-	if got, err = st.CancelShareRequest(ctx, user, f.ID); err != nil {
-		t.Fatalf("cancel: %v", err)
-	} else if got.ShareStatus != "private" || got.ShareRequested != nil {
-		t.Fatalf("after cancel = (%q,%v), want (private, nil)", got.ShareStatus, got.ShareRequested)
-	}
-
-	// Request again; an admin approves -> shared.
-	if _, err := st.SetShareRequest(ctx, user, f.ID, "shared"); err != nil {
-		t.Fatalf("re-request: %v", err)
-	}
-	if got, err = st.ResolveShare(ctx, f.ID, true); err != nil {
-		t.Fatalf("approve: %v", err)
-	} else if got.ShareStatus != "shared" {
-		t.Fatalf("after approve = %q, want shared", got.ShareStatus)
-	}
-
-	// shared -> request to go private -> pending; cancel -> back to shared.
-	if _, err := st.SetShareRequest(ctx, user, f.ID, "private"); err != nil {
-		t.Fatalf("request private: %v", err)
-	}
-	if got, err = st.CancelShareRequest(ctx, user, f.ID); err != nil {
-		t.Fatalf("cancel 2: %v", err)
-	} else if got.ShareStatus != "shared" {
-		t.Fatalf("after cancel 2 = %q, want shared", got.ShareStatus)
-	}
-
-	// A non-owner cannot cancel.
-	if _, err := st.CancelShareRequest(ctx, other, f.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("non-owner cancel: got %v, want ErrNotFound", err)
-	}
-	// A feed that is not pending cannot be cancelled.
-	if _, err := st.CancelShareRequest(ctx, user, f.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cancel non-pending: got %v, want ErrNotFound", err)
-	}
-}
-
 // TestCollectionVisibilityLifecycle walks a collection through its visibility
 // states (with a feed inside it), verifies the public directory + import path,
 // and checks that the owner can cancel their own pending change.
