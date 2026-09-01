@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Install a GitHub Actions self-hosted runner for elyfeed on this host.
 #
-# Usage: RUNNER_TOKEN=<token> ./scripts/install-runner.sh <label>
+# Usage: RUNNER_TOKEN=<token> ./scripts/install-runner.sh <labels>
 #
-# <label> must be "prod" (production host) or "staging" (chesster) — it
-# matches the runs-on label the CI deploy jobs look for. Get a one-time
-# registration token from:
+# <labels> is a comma-separated list drawn from "prod" and "staging" —
+# each matches a runs-on label the CI deploy jobs look for. A host serving
+# both environments uses "prod,staging". Get a one-time registration token from:
 #
 #   https://github.com/Wgelyjr/elyfeed/settings/actions/runners/new
 #
@@ -15,15 +15,26 @@
 # polling systemd service.
 set -euo pipefail
 
-LABEL="${1:?usage: RUNNER_TOKEN=<token> ./scripts/install-runner.sh <prod|staging>}"
-case "$LABEL" in
-  prod | staging) ;;
-  *) echo "label must be 'prod' or 'staging'" >&2; exit 1 ;;
-esac
+LABELS="${1:?usage: RUNNER_TOKEN=<token> ./scripts/install-runner.sh <prod|staging|prod,staging>}"
+IFS=',' read -ra _label_parts <<< "$LABELS"
+for _p in "${_label_parts[@]}"; do
+  case "$_p" in
+    prod | staging) ;;
+    *) echo "each label must be 'prod' or 'staging'" >&2; exit 1 ;;
+  esac
+done
 : "${RUNNER_TOKEN:?set RUNNER_TOKEN to the one-time runner registration token}"
+
+# Run as root without sudo, or via sudo when unprivileged.
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+  SUDO="sudo"
+fi
 
 REPO_URL="https://github.com/Wgelyjr/elyfeed"
 INSTALL_DIR="/opt/elyfeed-runner"
+# Unique runner name per label set, e.g. elyfeed-prod or elyfeed-prod-staging.
+RUNNER_NAME="elyfeed-$(printf '%s' "$LABELS" | tr ',' '-')"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -32,8 +43,8 @@ case "$ARCH" in
   *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-sudo mkdir -p "$INSTALL_DIR"
-sudo chown "$(id -un)" "$INSTALL_DIR"
+$SUDO mkdir -p "$INSTALL_DIR"
+$SUDO chown "$(id -un)" "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 if [ -x ./config.sh ]; then
@@ -55,14 +66,14 @@ rm runner.tar.gz
 ./config.sh \
   --url "$REPO_URL" \
   --token "$RUNNER_TOKEN" \
-  --name "elyfeed-${LABEL}" \
-  --labels "${LABEL},production" \
+  --name "$RUNNER_NAME" \
+  --labels "${LABELS},production" \
   --work "$INSTALL_DIR/work" \
   --replace
 
-sudo ./svc.sh install
+$SUDO ./svc.sh install
 ./svc.sh start
 
 echo
-echo "runner 'elyfeed-${LABEL}' installed and running (systemd service)."
+echo "runner '$RUNNER_NAME' (labels: ${LABELS},production) installed and running (systemd service)."
 echo "Verify at: $REPO_URL/settings/actions/runners"
