@@ -89,6 +89,9 @@ export default function Sidebar({
     new Set(),
   );
   const [expandedFeedId, setExpandedFeedId] = useState<number | null>(null);
+  const [collapsedCollections, setCollapsedCollections] = useState<Set<number>>(
+    new Set(),
+  );
 
   const [creatingCollection, setCreatingCollection] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState('');
@@ -172,6 +175,64 @@ export default function Sidebar({
     onSetFeedCollections(feed.id, next);
   }
 
+  function toggleCollapsedCollection(id: number) {
+    setCollapsedCollections((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function renderFeed(f: Feed, depth: number, key: string) {
+    const title = f.title || f.url;
+    return (
+      <div className="feed-block" key={key} style={{ paddingLeft: depth * 14 }}>
+        <div className="feed-row">
+          <button
+            className={
+              selectedFeedId === f.id ? 'feed-item active' : 'feed-item'
+            }
+            onClick={() => onSelectFeed(f.id)}
+            title={f.url}
+          >
+            {title}
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setExpandedFeedId((id) => (id === f.id ? null : f.id))}
+            title="Organize into collections"
+            aria-label={`Organize ${title}`}
+          >
+            {expandedFeedId === f.id ? '▾' : '▸'}
+          </button>
+        </div>
+        {expandedFeedId === f.id && (
+          <div className="assign-panel">
+            {collections.length === 0 ? (
+              <div className="muted small pad-x">No collections yet.</div>
+            ) : (
+              collections.map((c) => {
+                const checked = f.collection_ids.includes(c.id);
+                return (
+                  <label className="assign-row" key={c.id}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleFeedCollection(f, c.id)}
+                    />
+                    <span>{c.name}</span>
+                  </label>
+                );
+              })
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function submitCreateCollection(e: FormEvent) {
     e.preventDefault();
     const name = newCollectionName.trim();
@@ -236,6 +297,15 @@ export default function Sidebar({
     }
   }
 
+  const feedsByCollection = new Map<number, Feed[]>();
+  for (const c of collections) feedsByCollection.set(c.id, []);
+  for (const f of feeds) {
+    for (const cid of f.collection_ids) feedsByCollection.get(cid)?.push(f);
+  }
+  const collectionlessFeeds = feeds.filter(
+    (f) => f.collection_ids.length === 0,
+  );
+
   return (
     <aside className={open ? 'sidebar open' : 'sidebar'}>
       <div className="brand">elyfeed</div>
@@ -296,20 +366,32 @@ export default function Sidebar({
       )}
       {bulkAddError && <div className="form-error">{bulkAddError}</div>}
 
-      {/* Collections */}
+      {/* Feeds: collections and feeds in one tree */}
       <section className="side-section">
         <div className="section-head">
-          <span className="section-title">Collections</span>
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => setCreatingCollection(true)}
-            title="New collection"
-            aria-label="New collection"
-            disabled={creatingCollection}
-          >
-            +
-          </button>
+          <span className="section-title">Feeds</span>
+          <div className="head-actions">
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setCreatingCollection(true)}
+              title="New collection"
+              aria-label="New collection"
+              disabled={creatingCollection}
+            >
+              +
+            </button>
+            <button
+              type="button"
+              className="btn tiny"
+              onClick={() => {
+                setManageMode((m) => !m);
+                setSelectedForDelete(new Set());
+              }}
+            >
+              {manageMode ? 'Done' : 'Manage'}
+            </button>
+          </div>
         </div>
 
         {creatingCollection && (
@@ -343,155 +425,6 @@ export default function Sidebar({
           </form>
         )}
 
-        <div className="coll-list">
-          {collections.map((c) =>
-            renamingCollectionId === c.id ? (
-              <form className="inline-form" key={c.id} onSubmit={submitRename}>
-                <input
-                  value={renameName}
-                  onChange={(e) => setRenameName(e.target.value)}
-                  aria-label={`Rename ${c.name}`}
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') cancelRename();
-                  }}
-                />
-                <button type="submit" className="btn tiny" disabled={collectionPending}>
-                  Save
-                </button>
-                <button type="button" className="btn tiny" onClick={cancelRename}>
-                  Cancel
-                </button>
-              </form>
-            ) : (
-              <div className="coll-row" key={c.id}>
-                <button
-                  className={
-                    selectedCollectionId === c.id
-                      ? 'nav-item active'
-                      : 'nav-item'
-                  }
-                  onClick={() => {
-                    disarm();
-                    onSelectCollection(c.id);
-                  }}
-                  title={c.name}
-                >
-                  <span className="nav-label">{c.name}</span>
-                  <span className="count">{c.feed_count}</span>
-                </button>
-                {(() => {
-                  const v = collectionVisibilityMeta(c);
-                  return (
-                    <button
-                      type="button"
-                      className={`coll-vis ${c.visibility_status}`}
-                      onClick={v.onClick}
-                      title={v.title}
-                      aria-label={`${v.label} — ${c.name}`}
-                      disabled={v.disabled || collectionVisibilityPending}
-                    >
-                      {v.label}
-                    </button>
-                  );
-                })()}
-                <div className="row-actions">
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    onClick={() => onCreateCollectionShare(c.id)}
-                    title={
-                      collectionShare?.id === c.id
-                        ? `Link copied: ${collectionShare.link}`
-                        : 'Copy a share link for this collection'
-                    }
-                    aria-label={`Share ${c.name}`}
-                    disabled={collectionPending}
-                  >
-                    {collectionShare?.id === c.id ? '✓' : '⤴'}
-                  </button>
-                  {(() => {
-                    const armed =
-                      armedAction?.id === c.id &&
-                      armedAction.action === 'rename';
-                    return (
-                      <button
-                        type="button"
-                        className={armed ? 'icon-btn confirm' : 'icon-btn'}
-                        onClick={() => {
-                          if (armed) {
-                            disarm();
-                            startRename(c);
-                          } else {
-                            arm(c, 'rename');
-                          }
-                        }}
-                        title={
-                          armed
-                            ? `Click again to rename ${c.name}`
-                            : 'Rename collection (click twice to confirm)'
-                        }
-                        aria-label={`Rename ${c.name}`}
-                      >
-                        ✎
-                      </button>
-                    );
-                  })()}
-                  {(() => {
-                    const armed =
-                      armedAction?.id === c.id &&
-                      armedAction.action === 'delete';
-                    return (
-                      <button
-                        type="button"
-                        className={
-                          armed ? 'icon-btn danger confirm' : 'icon-btn danger'
-                        }
-                        onClick={() => {
-                          if (armed) {
-                            disarm();
-                            onDeleteCollection(c.id);
-                          } else {
-                            arm(c, 'delete');
-                          }
-                        }}
-                        title={
-                          armed
-                            ? `Click again to delete ${c.name}`
-                            : 'Delete collection (click twice to confirm)'
-                        }
-                        aria-label={`Delete ${c.name}`}
-                      >
-                        {armed ? '✓' : '×'}
-                      </button>
-                    );
-                  })()}
-                </div>
-              </div>
-            ),
-          )}
-          {collections.length === 0 && !creatingCollection && (
-            <div className="muted small pad-x">No collections yet.</div>
-          )}
-        </div>
-      </section>
-
-      {/* Feeds */}
-      <section className="side-section">
-        <div className="section-head">
-          <span className="section-title">Feeds</span>
-          <button
-            type="button"
-            className="btn tiny"
-            onClick={() => {
-              setManageMode((m) => !m);
-              setSelectedForDelete(new Set());
-            }}
-          >
-            {manageMode ? 'Done' : 'Manage'}
-          </button>
-        </div>
-
         {manageMode && selectedForDelete.size > 0 && (
           <button
             className="btn danger small"
@@ -504,20 +437,9 @@ export default function Sidebar({
           </button>
         )}
 
-        <nav className="feed-nav">
-          <button
-            className={
-              !manageMode && selectedFeedId === null && selectedCollectionId === null
-                ? 'feed-item active'
-                : 'feed-item'
-            }
-            onClick={() => onSelectFeed(null)}
-          >
-            All feeds
-          </button>
-
-          {feeds.map((f) =>
-            manageMode ? (
+        {manageMode ? (
+          <nav className="feed-nav">
+            {feeds.map((f) => (
               <label className="feed-row manage" key={f.id}>
                 <input
                   type="checkbox"
@@ -529,59 +451,187 @@ export default function Sidebar({
                   {f.title || f.url}
                 </span>
               </label>
-            ) : (
-              <div className="feed-block" key={f.id}>
-                <div className="feed-row">
-                  <button
-                    className={
-                      selectedFeedId === f.id ? 'feed-item active' : 'feed-item'
-                    }
-                    onClick={() => onSelectFeed(f.id)}
-                    title={f.url}
-                  >
-                    {f.title || f.url}
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    onClick={() =>
-                      setExpandedFeedId((id) => (id === f.id ? null : f.id))
-                    }
-                    title="Organize into collections"
-                    aria-label={`Organize ${f.title || f.url}`}
-                  >
-                    {expandedFeedId === f.id ? '▾' : '▸'}
-                  </button>
-                </div>
-                {expandedFeedId === f.id && (
-                  <div className="assign-panel">
-                    {collections.length === 0 ? (
-                      <div className="muted small pad-x">No collections yet.</div>
-                    ) : (
-                      collections.map((c) => {
-                        const checked = f.collection_ids.includes(c.id);
-                        return (
-                          <label className="assign-row" key={c.id}>
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleFeedCollection(f, c.id)}
-                            />
-                            <span>{c.name}</span>
-                          </label>
-                        );
-                      })
-                    )}
-                  </div>
-                )}
-              </div>
-            ),
-          )}
+            ))}
+            {feeds.length === 0 && (
+              <div className="muted pad">No feeds yet. Add one above.</div>
+            )}
+          </nav>
+        ) : (
+          <nav className="feed-nav">
+            <button
+              className={
+                selectedFeedId === null && selectedCollectionId === null
+                  ? 'feed-item active'
+                  : 'feed-item'
+              }
+              onClick={() => onSelectFeed(null)}
+            >
+              All feeds
+            </button>
 
-          {feeds.length === 0 && (
-            <div className="muted pad">No feeds yet. Add one above.</div>
-          )}
-        </nav>
+            {collections.map((c) => {
+              const isCollapsed = collapsedCollections.has(c.id);
+              const feedsIn = feedsByCollection.get(c.id) ?? [];
+              return (
+                <div className="coll-tree" key={c.id}>
+                  {renamingCollectionId === c.id ? (
+                    <form
+                      className="inline-form"
+                      style={{ paddingLeft: 14 }}
+                      onSubmit={submitRename}
+                    >
+                      <input
+                        value={renameName}
+                        onChange={(e) => setRenameName(e.target.value)}
+                        aria-label={`Rename ${c.name}`}
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') cancelRename();
+                        }}
+                      />
+                      <button type="submit" className="btn tiny" disabled={collectionPending}>
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="btn tiny"
+                        onClick={cancelRename}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  ) : (
+                    <div className="coll-row">
+                      <button
+                        type="button"
+                        className="chevron"
+                        onClick={() => toggleCollapsedCollection(c.id)}
+                        aria-label={
+                          isCollapsed
+                            ? `Expand ${c.name}`
+                            : `Collapse ${c.name}`
+                        }
+                      >
+                        {isCollapsed ? '▸' : '▾'}
+                      </button>
+                      <button
+                        className={
+                          selectedCollectionId === c.id
+                            ? 'nav-item active'
+                            : 'nav-item'
+                        }
+                        onClick={() => {
+                          disarm();
+                          onSelectCollection(c.id);
+                        }}
+                        title={c.name}
+                      >
+                        <span className="nav-label">{c.name}</span>
+                        <span className="count">{c.feed_count}</span>
+                      </button>
+                      {(() => {
+                        const v = collectionVisibilityMeta(c);
+                        return (
+                          <button
+                            type="button"
+                            className={`coll-vis ${c.visibility_status}`}
+                            onClick={v.onClick}
+                            title={v.title}
+                            aria-label={`${v.label} — ${c.name}`}
+                            disabled={v.disabled || collectionVisibilityPending}
+                          >
+                            {v.label}
+                          </button>
+                        );
+                      })()}
+                      <div className="row-actions">
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          onClick={() => onCreateCollectionShare(c.id)}
+                          title={
+                            collectionShare?.id === c.id
+                              ? `Link copied: ${collectionShare.link}`
+                              : 'Copy a share link for this collection'
+                          }
+                          aria-label={`Share ${c.name}`}
+                          disabled={collectionPending}
+                        >
+                          {collectionShare?.id === c.id ? '✓' : '⤴'}
+                        </button>
+                        {(() => {
+                          const armed =
+                            armedAction?.id === c.id &&
+                            armedAction.action === 'rename';
+                          return (
+                            <button
+                              type="button"
+                              className={armed ? 'icon-btn confirm' : 'icon-btn'}
+                              onClick={() => {
+                                if (armed) {
+                                  disarm();
+                                  startRename(c);
+                                } else {
+                                  arm(c, 'rename');
+                                }
+                              }}
+                              title={
+                                armed
+                                  ? `Click again to rename ${c.name}`
+                                  : 'Rename collection (click twice to confirm)'
+                              }
+                              aria-label={`Rename ${c.name}`}
+                            >
+                              ✎
+                            </button>
+                          );
+                        })()}
+                        {(() => {
+                          const armed =
+                            armedAction?.id === c.id &&
+                            armedAction.action === 'delete';
+                          return (
+                            <button
+                              type="button"
+                              className={
+                                armed ? 'icon-btn danger confirm' : 'icon-btn danger'
+                              }
+                              onClick={() => {
+                                if (armed) {
+                                  disarm();
+                                  onDeleteCollection(c.id);
+                                } else {
+                                  arm(c, 'delete');
+                                }
+                              }}
+                              title={
+                                armed
+                                  ? `Click again to delete ${c.name}`
+                                  : 'Delete collection (click twice to confirm)'
+                              }
+                              aria-label={`Delete ${c.name}`}
+                            >
+                              {armed ? '✓' : '×'}
+                            </button>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  )}
+                  {!isCollapsed &&
+                    renamingCollectionId !== c.id &&
+                    feedsIn.map((f) => renderFeed(f, 2, `c${c.id}-${f.id}`))}
+                </div>
+              );
+            })}
+
+            {collectionlessFeeds.map((f) => renderFeed(f, 1, `root-${f.id}`))}
+
+            {feeds.length === 0 && (
+              <div className="muted pad">No feeds yet. Add one above.</div>
+            )}
+          </nav>
+        )}
       </section>
 
       {/* Public collections: community directory (one-click import) */}
