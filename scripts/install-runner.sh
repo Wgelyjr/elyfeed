@@ -63,7 +63,9 @@ tar xzf runner.tar.gz
 rm runner.tar.gz
 
 # "production" is required for runners serving public repos.
-./config.sh \
+# These hosts run the deploy scripts (and podman) as root, so allow the
+# runner to run as root too.
+RUNNER_ALLOW_RUNASROOT=1 ./config.sh \
   --url "$REPO_URL" \
   --token "$RUNNER_TOKEN" \
   --name "$RUNNER_NAME" \
