@@ -38,7 +38,7 @@ RUNNER_NAME="elyfeed-$(printf '%s' "$LABELS" | tr ',' '-')"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
-  x86_64) ARCH=amd64 ;;
+  x86_64) ARCH=x64 ;;
   aarch64) ARCH=arm64 ;;
   *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
@@ -58,7 +58,7 @@ VERSION="$(
 )"
 echo "installing actions-runner v${VERSION} (linux-${ARCH})"
 curl -fsSL -o runner.tar.gz \
-  "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-${VERSION}-linux-${ARCH}.tar.gz"
+  "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-${ARCH}-${VERSION}.tar.gz"
 tar xzf runner.tar.gz
 rm runner.tar.gz
 
