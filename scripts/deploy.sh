@@ -11,9 +11,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="elyfeed:latest"
 
 cd "$ROOT"
+SELF_HASH="$(git hash-object scripts/deploy.sh)"
 git fetch origin
 git checkout main
 git pull --ff-only
+# Re-exec if this pull updated this script: bash holds the old copy in
+# memory, so without this the new version would never run.
+if [ "$(git hash-object scripts/deploy.sh)" != "$SELF_HASH" ]; then
+  exec bash "$ROOT/scripts/deploy.sh"
+fi
 
 # --network host: needed on hosts without /dev/net/tun, where podman's
 # default build networking (pasta/slirp4netns) cannot be set up. Harmless
