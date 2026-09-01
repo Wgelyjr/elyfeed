@@ -46,7 +46,7 @@ jobs:
   deploy-staging:
     needs: test
     if: github.ref == 'refs/heads/staging'
-    runs-on: [self-hosted, linux, amd64, staging]
+    runs-on: [self-hosted, linux, staging]
     concurrency:
       group: deploy-staging
       cancel-in-progress: false
@@ -57,7 +57,7 @@ jobs:
   deploy-prod:
     needs: test
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, amd64, prod]
+    runs-on: [self-hosted, linux, prod]
     concurrency:
       group: deploy-prod
       cancel-in-progress: false
