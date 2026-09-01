@@ -20,6 +20,17 @@ git pull --ff-only
 # elsewhere.
 podman build --network host -t "$IMAGE" .
 
+# Mirror elyfeed-stack.service's environment (EnvironmentFile=.env plus
+# ELYFEED_PORT=8080): podman-compose 1.3.0 does not read .env files, so the
+# vars must be in its process environment or the app config (BASE_URL,
+# SMTP, OIDC, ...) comes up empty.
+set -a
+if [ -f .env ]; then
+  . ./.env
+fi
+set +a
+export ELYFEED_PORT="${ELYFEED_PORT:-8080}"
+
 # --force-recreate: podman-compose does not detect image changes on its own.
 podman-compose up -d --force-recreate
 
