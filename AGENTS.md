@@ -41,12 +41,18 @@ deploy script via a self-hosted runner labeled `prod` / `staging`. Deploys
 only run after the test job passes. Manual re-deploys: the Actions page
 (`workflow_dispatch`).
 
-- Runners: `RUNNER_TOKEN=<token> ./scripts/install-runner.sh <prod|staging>`
-  on each host (one-time token from repo Settings → Actions → Runners).
-  Run as the deploy user; it registers a `github-runner-*` systemd unit.
-  The `production` label is required for public repos — the script adds it.
-- Once a CI deploy has landed, the old polling systemd service can be
-  retired (`systemctl disable --now <unit>`).
+- Runners: `RUNNER_TOKEN=<token> ./scripts/install-runner.sh <labels>` on
+  each host, where `<labels>` is `prod`, `staging`, or `prod,staging` for a
+  host serving both (one-time token from repo Settings → Actions → Runners).
+  Run as the user the deploy scripts run as (root on chesster — the script
+  handles root via `RUNNER_ALLOW_RUNASROOT`); it registers an
+  `actions.runner.Wgelyjr-elyfeed.<name>.service` systemd unit. The
+  `production` label is required for public repos — the script adds it.
+- Deploy jobs route on `[self-hosted, linux, prod]` / `[self-hosted, linux,
+  staging]`. Do not add `amd64` there: the runner's auto-assigned arch
+  label is `x64`, so an `amd64` requirement would never match.
+- The old polling systemd service (`elyfeed-deploy.timer` on chesster) has
+  been retired now that CI deploys land; do not re-enable it.
 - Manual deploy (exactly what the runner runs):
 
 ```sh
