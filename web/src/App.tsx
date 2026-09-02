@@ -429,17 +429,7 @@ export default function App({ user, onLogout }: AppProps) {
                 </button>
               ))}
             </div>
-            <div className="topbar-actions">
-              <span className="user-chip" title={user.email}>
-                {user.display_name || user.email}
-              </span>
-              <button
-                className="btn small"
-                onClick={handleLogout}
-                disabled={loggingOut}
-              >
-                {loggingOut ? '…' : 'Log out'}
-              </button>
+            <div className="topbar-segment" role="group" aria-label="Feed status">
               <span className="unread-badge" title="Total unread items">
                 {unreadQuery.data ? unreadQuery.data.count : 0} unread
               </span>
@@ -449,6 +439,18 @@ export default function App({ user, onLogout }: AppProps) {
                 disabled={refresh.isPending}
               >
                 {refresh.isPending ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
+            <div className="topbar-segment" role="group" aria-label="Account">
+              <span className="user-chip" title={user.email}>
+                {user.display_name || user.email}
+              </span>
+              <button
+                className="btn small"
+                onClick={handleLogout}
+                disabled={loggingOut}
+              >
+                {loggingOut ? '…' : 'Log out'}
               </button>
             </div>
           </div>
